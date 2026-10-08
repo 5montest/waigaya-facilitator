@@ -1,3 +1,4 @@
+import { UserError as Error, UserError } from './errors.js';
 import { randomUUID } from 'node:crypto';
 import { initialMeeting, transition, modes, canSpeak, isMeaningful } from './meeting.js';
 
@@ -45,11 +46,12 @@ export class Controller {
     if (transition(this.state, action, this.clock(), details)) { this.invalidate(); this.healthy(false); return true; }
     return false;
   }
-  upsert({ id = randomUUID(), text, speaker = null, final = true, startMs, endMs, source = 'manual' }) {
+  upsert({ id = randomUUID(), text, speaker = null, final = true, startMs, endMs, source = 'manual', expectedRevision }) {
     if (typeof text !== 'string' || !text.trim() || text.length > 12000) throw new Error('発言は1〜12,000文字で入力してください。');
     if (typeof id !== 'string' || id.length > 150 || typeof final !== 'boolean') throw new Error('発言情報が不正です。');
     if (speaker !== null && (typeof speaker !== 'string' || speaker.length > 80)) throw new Error('話者情報が不正です。');
     const old = this.state.utterances.find(u => u.id === id);
+    if (expectedRevision !== undefined && old?.revision !== expectedRevision) throw new Error('原発言の版が変わりました。再確認してください。');
     if (startMs === undefined) startMs = old?.startMs ?? null;
     if (endMs === undefined) endMs = old?.endMs ?? null;
     if (![startMs, endMs].every(v => v === null || (Number.isFinite(v) && v >= 0))) throw new Error('時刻が不正です。');
@@ -58,7 +60,7 @@ export class Controller {
     // 確定発言の訂正は、回答の前提が変わるので取り消す。
     const preserveReply = (!old || !old.final) && (this.state.request?.mode !== 'autonomous' || !final || !isMeaningful(text));
     this.invalidate({ preserveReply });
-    const next = { id, text, speaker, final, startMs, endMs, source, revision: (old?.revision ?? 0) + 1, receivedAt: old?.receivedAt ?? this.clock() };
+    const next = { id, text, speaker, final, startMs, endMs, source: old?.source ?? source, revision: (old?.revision ?? 0) + 1, receivedAt: old?.receivedAt ?? this.clock() };
     if (old) Object.assign(old, next); else this.state.utterances.push(next);
     this.state.utterances.sort((a, b) => (a.startMs ?? a.receivedAt) - (b.startMs ?? b.receivedAt));
     return next;

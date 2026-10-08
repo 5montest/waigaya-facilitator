@@ -36,6 +36,12 @@ test('T05 finishの競合・終了後の再実行は一度だけ生成',async()=
  try{await r.utterance();await Promise.all([r.post(r.path+'/finish',{}),r.post(r.path+'/finish',{reason:'empty_timeout'})]);assert.equal(count,1);resolve();await wait(async()=> (await r.state()).status==='completed');await r.post(r.path+'/finish',{});assert.equal(count,1);}
  finally{await r.app.close();}
 });
+test('途中要約と終了が競合しても、最終発言を含む正式議事録を一度だけ生成する',async()=>{
+ let release;const snapshots=[];const r=await fixture({minutesGenerator:{generateDraft:async s=>{snapshots.push(s);if(snapshots.length===1)await new Promise(done=>{release=done;});return draft(s);}}});
+ try{await r.utterance();await r.post(r.path+'/summary',{});await r.utterance('u2','最後に設定図の試行を提案しました。');await Promise.all([r.post(r.path+'/finish',{}),r.post(r.path+'/finish',{})]);assert.equal(snapshots.length,1);release();await wait(async()=> (await r.state()).status==='completed');
+  const state=await r.state();assert.equal(snapshots.length,2);assert.equal(state.minutesHistory.filter(v=>v.kind==='minutes').length,1);assert.equal(state.minutesHistory.at(-1).transcriptRefs.length,2);assert.equal(state.minutesStatus,'draft');assert.ok(state.minutesHistory.at(-1).metadata.endedAt);
+ }finally{release?.();await r.app.close();}
+});
 test('T06/T07 pausedでは新しいDiscord文字起こしを拒否、resumeから新規発言を保存',async()=>{
  const r=await fixture();try{await r.utterance();await r.post(r.path+'/events',{type:'lifecycle',action:'pause'});assert.equal((await r.utterance('u2')).status,400);assert.equal((await r.state()).utterances.length,1);await r.post(r.path+'/events',{type:'lifecycle',action:'resume'});assert.equal((await r.utterance('u3')).status,200);assert.deepEqual((await r.state()).utterances.map(u=>u.id),['u1','u3']);}finally{await r.app.close();}
 });
@@ -77,4 +83,17 @@ test('T02/T11 minutes/quietは直接speak_replyを送ってもTTSを呼ばない
  const bridge=new MeetingBridge(r.base,{serviceToken:token});bridge.on('failure',()=>{});
  try{await bridge.open(undefined,{sessionId:r.path.split('/').at(-1)});await r.utterance();const answer=await bridge.ask();const rejected=once(bridge,'action_error');bridge.send({type:'speak_reply',requestId:answer.reply.requestId});assert.equal((await rejected)[0].code,'unavailable');assert.equal(calls,0);}
  finally{await bridge.close();await r.app.close();if(old===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=old;}
+});
+
+test('保存失敗は保存済みと表示せず、既存原本を消さず生の例外も返さない',async()=>{
+ const r=await fixture();try{await r.utterance();const lastSaved=(await r.state()).lastPersistedAt,save=r.store.save.bind(r.store);let once=true;r.store.save=(...args)=>{if(once){once=false;throw new Error('secret upstream text');}return save(...args);};
+  const result=await r.utterance('u2');assert.equal(result.status,400);assert.match(result.body.error,/保存に失敗/);assert.ok(!result.body.error.includes('secret'));const state=await r.state();assert.equal(state.health.storage,'failed');assert.equal(state.inputHealthy,false);assert.equal(state.lastPersistedAt,lastSaved);assert.equal(r.store.load(state.id).utterances.length,1);
+ }finally{await r.app.close();}
+});
+
+test('確認済み版の本文を固定し、訂正と再確認で公開版を混同しない',async()=>{
+ const r=await fixture();try{await r.utterance();await r.post(r.path+'/finish',{});await wait(async()=> (await r.state()).minutesVersion===1);await r.post(r.path+'/minutes',{action:'approve',version:1,actorId:ownerId});
+  const original=(await r.get(r.path+'/minutes.md')).body;const state=await r.state();assert.equal(state.minutesHistory[0].approvedMarkdown,original);
+  const document=structuredClone(state.minutesHistory[0].document);document.overview[0].text='担当者が本文を訂正した。';await r.post(r.path+'/minutes',{action:'edit',version:1,actorId:ownerId,document});const updated=await r.state();assert.equal(updated.minutesVersion,2);assert.equal(updated.minutesHistory[0].approvedMarkdown,original);assert.equal(updated.minutesHistory[1].approvedAt,null);assert.equal(updated.minutesHistory[1].approvedMarkdown,null);
+ }finally{await r.app.close();}
 });

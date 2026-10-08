@@ -1,3 +1,4 @@
+import { UserError as Error, UserError } from './errors.js';
 import Ajv from 'ajv';
 import { catalog, keyFor } from './models.js';
 
@@ -87,23 +88,26 @@ export class MinutesGenerator {
   }
 }
 export function minutesStale(state, version) {
+  if (version.transcriptRefs && (version.transcriptRefs.length !== state.utterances.filter(u => u.final && u.source !== 'ai').length || version.confirmedDecisions && JSON.stringify(version.confirmedDecisions) !== JSON.stringify(state.decisions))) return true;
   return minutesItems(version.document).some(item => !evidenceCurrent(state, item.evidence)) || (version.transcriptRefs || []).some(r => !evidenceCurrent(state, [r]));
 }
 export function minutesMarkdown(state, version = state.minutesHistory?.at(-1)) {
   if (!version) throw new Error('議事録はまだありません。再生成してください。');
+  if (version.approvedMarkdown) return (minutesStale(state, version) ? '記録が更新されています。この確認済み版は要再確認で、再公開できません。\n\n' : '') + version.approvedMarkdown;
+  const metadata = version.metadata || state;
   const clean = s => String(s).replace(/[\r\n]/g, ' ');
   const stale = minutesStale(state, version);
   const refs = list => list.map(r => `${r.utteranceId}@${r.revision}`).join(', ');
-  const lines = [`# 議事録：${clean(state.topic)}`, '', `- 会議ID：${state.id}`, `- 日時：${state.startedAt ? new Date(state.startedAt).toISOString() : '不明'}〜${state.endedAt ? new Date(state.endedAt).toISOString() : '進行中'}`,
+  const lines = [`# 議事録：${clean(metadata.topic)}`, '', `- 会議ID：${state.id}`, `- 日時：${metadata.startedAt ? new Date(metadata.startedAt).toISOString() : '不明'}〜${metadata.endedAt ? new Date(metadata.endedAt).toISOString() : '進行中'}`,
     `- 状態：${state.status}`, `- 議事録：版${version.version} ${stale ? '要再確認' : version.approvedAt ? '操作担当者が確認済み' : 'AI下書き（未承認）'}`,
-    `- 参加者（記録で確認）：${[...new Set(state.utterances.map(u => u.speaker).filter(Boolean))].map(clean).join('、') || '不明'}`, ''];
+    `- 参加者（記録で確認）：${(metadata.participantNames || [...new Set(state.utterances.map(u => u.speaker).filter(Boolean))]).map(clean).join('、') || '不明'}`, ''];
   const section = (title, entries, format = entry => clean(entry.text)) => {
     lines.push(`## ${title}`, '');
     lines.push(...(entries.length ? entries.map(e => `- ${format(e)}（根拠：${refs(e.evidence)}${evidenceCurrent(state, e.evidence) ? '' : '。要再確認'}）`) : ['該当なし']), '');
   };
   section('概要', version.document.overview); section('主な案', version.document.ideas);
   section('案の比較・議論', version.document.comparisons);
-  section('決定事項（人が確認済み）', state.decisions || []);
+  section('決定事項（人が確認済み）', version.confirmedDecisions || state.decisions || []);
   section('決定候補（確認待ち）', version.document.decisionCandidates);
   section('未決事項', version.document.openIssues);
   section('次のアクション（候補）', version.document.actionItems, e => `${clean(e.text)}／担当：${clean(e.owner || '不明')}／期限：${clean(e.deadline || '不明')}`);

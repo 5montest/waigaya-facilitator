@@ -1,3 +1,4 @@
+import { UserError as Error, UserError } from './errors.js';
 import Ajv from 'ajv';
 import { createHash } from 'node:crypto';
 

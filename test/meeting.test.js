@@ -98,5 +98,20 @@ test('T16 共有連打は同じ版を一度だけ送信・確定',async()=>{
 test('送信の結果が不明でも予約を残し、自動再送しない',async()=>{
  const publisher=new MinutesPublisher(),state={id:'s',minutesHistory:[{version:1}],publications:[]};let sends=0;
  const options={state,channelId:'c',reserve:async()=>state.publications.push({version:1,channelId:'c',status:'pending'}),send:async()=>{sends++;throw new Error('network');},commit:assert.fail};
- await assert.rejects(()=>publisher.publish(options));assert.equal((await publisher.publish(options)).duplicate,true);assert.equal(sends,1);
+ await assert.rejects(()=>publisher.publish(options),/共有送信に失敗.*結果が不明/);assert.equal((await publisher.publish(options)).duplicate,true);assert.equal(sends,1);
+});
+test('Discord投稿成功後の保存失敗は送信失敗と区別し、同じ版を再送しない',async()=>{
+ const publisher=new MinutesPublisher(),state={id:'s',minutesHistory:[{version:1}],publications:[]};let sends=0;
+ const options={state,channelId:'c',reserve:async()=>state.publications.push({version:1,channelId:'c',status:'pending'}),send:async()=>{sends++;return{id:'posted'};},commit:async()=>{throw new Error('unsafe database exception');}};
+ await assert.rejects(()=>publisher.publish(options),/送信は完了.*保存を確認できません/);assert.equal((await publisher.publish(options)).duplicate,true);assert.equal(sends,1);
+});
+
+test('原発言の訂正は版を検証し、Discord由来の情報を保つ',()=>{
+ const c=new Controller();c.upsert({id:'u',text:'設定は半日でした。',source:'discord'});
+ assert.throws(()=>c.upsert({id:'u',text:'訂正',expectedRevision:2}));c.upsert({id:'u',text:'訂正：設定は一時間でした。',expectedRevision:1,source:'manual'});assert.equal(c.state.utterances[0].source,'discord');assert.equal(c.state.utterances[0].revision,2);
+});
+
+test('旧Discord会議は人が実IDを指定して移行し、原本と会議IDを保つ',async()=>{
+ const {migrateLegacyMeeting}=await import('../scripts/migrate-discord-meeting.js');const store=new Store(':memory:');const c=new Controller();c.upsert({id:'u',text:'既存の会議を記録した。',source:'discord'});store.save(c.state,'legacy');
+ try{assert.throws(()=>migrateLegacyMeeting(store,{sessionId:c.state.id,guildId:'fake',voiceChannelId:'v',ownerId:'o'}));const result=migrateLegacyMeeting(store,{sessionId:c.state.id,guildId:'123456789012345678',voiceChannelId:'223456789012345678',ownerId:'323456789012345678'});assert.equal(result.id,c.state.id);assert.equal(result.utterances.length,1);assert.equal(result.status,'paused');assert.equal(result.mode,'minutes');assert.equal(result.startedAt,null);assert.equal(result.quiet,true);}finally{store.close();}
 });
