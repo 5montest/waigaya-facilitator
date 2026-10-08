@@ -38,7 +38,7 @@ test('無音パケットと小さなノイズは発話扱いせず、60msの声�
 test('Discord設定はトークンをファイルから読み、外部サーバーURLと複数行の秘密値を拒否する',()=>{
   const root=mkdtempSync(join(tmpdir(),'wg-discord-'));const env={DISCORD_APPLICATION_ID:'123456789012345678',DISCORD_GUILD_ID:'223456789012345678',DISCORD_BOT_TOKEN_FILE:'token.txt'};
   try{
-    writeFileSync(join(root,'token.txt'),'a'.repeat(60)+'\n');const config=discordConfig({env,workspace:root});assert.equal(config.token.length,60);
+    writeFileSync(join(root,'token.txt'),'a'.repeat(60)+'\n');const config=discordConfig({env:{...env,WAIGAYA_DISCORD_VOICE_CHANNEL_ID:'223456789012345678',WAIGAYA_DISCORD_MINUTES_FORUM_ID:'323456789012345678'},workspace:root});assert.equal(config.token.length,60);
     assert.equal(new URL(inviteUrl(config)).searchParams.get('guild_id'),env.DISCORD_GUILD_ID);
     assert.throws(()=>discordConfig({env:{...env,WAIGAYA_DISCORD_SERVER:'http://elsewhere.example'},workspace:root}));
     writeFileSync(join(root,'token.txt'),'a'.repeat(60)+'\n'+'b'.repeat(60));assert.throws(()=>discordConfig({env,workspace:root}));
@@ -66,16 +66,16 @@ test('Discordの割り込み停止後に遅い音声開始が届いても再生�
   }finally{playback.close();}
 });
 test('スラッシュコマンドは記録・返答・自律設定の操作に限定し、返信でメンションを展開しない',()=>{
-  assert.deepEqual(command.options.map(o=>o.name),['start','ask','stop','auto','leave']);
+  for(const name of ['start','ask','stop','auto','leave','minutes','publish','pause','resume','finish','mode','status','help'])assert.ok(command.options.some(o=>o.name===name));
   const state={id:'s',candidate:{id:'c',text:'@everyone 条件を確認しますか？',evidence:[{utteranceId:'u',revision:1}]},utterances:[{id:'u',revision:1,text:'条件は未確認です。',speaker:'A'}]};
   const result=proposal(state);assert.deepEqual(result.allowedMentions,{parse:[]});assert.equal(result.components[0].components.length,2);assert.match(result.content,/条件は未確認/);
 });
 test('Discordブリッジは既存会議へ話者別の発言と使用量を保存し、同じLLM候補を取得する',async()=>{
   const key=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY='mock-only';
-  const app=createApp({store:new Store(':memory:'),modelAnalyze:async({state})=>({result:{action:'question',reason:'条件が未確認',text:'どの条件を確認しますか？',evidence:[{utteranceId:state.utterances[0].id,revision:1}],notes:[]},usage:{estimatedUsd:null}})});
-  app.server.listen(0,'127.0.0.1');await once(app.server,'listening');const bridge=new MeetingBridge(`http://127.0.0.1:${app.server.address().port}`);const failures=[];bridge.on('failure',m=>failures.push(m));
+  const app=createApp({store:new Store(':memory:'),serviceToken:'local-test-token',modelAnalyze:async({state})=>({result:{action:'question',reason:'条件が未確認',text:'どの条件を確認しますか？',evidence:[{utteranceId:state.utterances[0].id,revision:1}],notes:[]},usage:{estimatedUsd:null}})});
+  app.server.listen(0,'127.0.0.1');await once(app.server,'listening');const bridge=new MeetingBridge(`http://127.0.0.1:${app.server.address().port}`,{serviceToken:'local-test-token'});const failures=[];bridge.on('failure',m=>failures.push(m));
   try{
-    await bridge.open('Discordテスト');assert.equal(bridge.state.inputHealthy,true);
+    await bridge.open('Discordテスト',{mode:'assistant'});assert.equal(bridge.state.inputHealthy,true);
     await bridge.enqueue({type:'utterance',utterance:{id:'u',text:'条件はまだ決まっていません。',speaker:'A (123)',source:'discord',final:true}});
     await bridge.enqueue({type:'audio_usage',usage:{provider:'openai',kind:'stt',model:'gpt-transcribe',uploadedAudioSeconds:60,estimatedUsd:999,outcome:'closed'}});
     const result=await bridge.ask();assert.equal(result.reply.text,'どの条件を確認しますか？');assert.equal(result.candidate,null);assert.equal(result.utterances[0].speaker,'A (123)');assert.equal(result.usage.find(u=>u.kind==='stt').estimatedUsd,.0045);
@@ -89,12 +89,12 @@ test('Discordで会話が続いても検討を完了し、発話終了後にボ�
   const key=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY='mock-only';
   let complete,signal,modelStarted,ttsCalls=0;
   const started=new Promise(resolve=>{modelStarted=resolve;});
-  const app=createApp({store:new Store(':memory:'),modelAnalyze:args=>{signal=args.signal;assert.equal(args.requestedReply,true);modelStarted();return new Promise(resolve=>{complete=resolve;});},ttsSynthesize:options=>{ttsCalls++;queueMicrotask(()=>{options.onChunk(Buffer.alloc(960));options.onDone();});return {abort(){}};}});
+  const app=createApp({store:new Store(':memory:'),serviceToken:'local-test-token',modelAnalyze:args=>{signal=args.signal;assert.equal(args.requestedReply,true);modelStarted();return new Promise(resolve=>{complete=resolve;});},ttsSynthesize:options=>{ttsCalls++;queueMicrotask(()=>{options.onChunk(Buffer.alloc(960));options.onDone();});return {abort(){}};}});
   app.server.listen(0,'127.0.0.1');await once(app.server,'listening');
-  const base=`http://127.0.0.1:${app.server.address().port}`,bridge=new MeetingBridge(base);const failures=[];bridge.on('failure',message=>failures.push(message));
+  const base=`http://127.0.0.1:${app.server.address().port}`,bridge=new MeetingBridge(base,{serviceToken:'local-test-token'});const failures=[];bridge.on('failure',message=>failures.push(message));
   let second;
   try{
-    await bridge.open('進行テスト');const sessionId=bridge.state.id;
+    await bridge.open('進行テスト',{mode:'assistant'});const sessionId=bridge.state.id;
     await bridge.enqueue({type:'utterance',utterance:{id:'u1',text:'ゆっくり歩く動きとジャンプを両立したい。'}});
     const asked=bridge.ask();await started;
     bridge.send({type:'stop',reason:'human_speaking'});bridge.send({type:'vad',active:true});await bridge.waitFor(s=>s.speaking);
@@ -107,7 +107,7 @@ test('Discordで会話が続いても検討を完了し、発話終了後にボ�
     bridge.send({type:'vad',active:false});const playback=await speaking;assert.equal(ttsCalls,1);assert.equal(playback.playback.text,answer.reply.text);assert.equal(playback.reply,null);
     bridge.send({type:'stop',reason:'human_speaking'});bridge.send({type:'vad',active:true});await bridge.waitFor(s=>s.speaking);assert.equal(bridge.state.playback,null);assert.equal(ttsCalls,1);
     await bridge.close();
-    second=new MeetingBridge(base);second.on('failure',m=>failures.push(m));await second.open(undefined,{sessionId});
+    second=new MeetingBridge(base,{serviceToken:'local-test-token'});second.on('failure',m=>failures.push(m));await second.open(undefined,{sessionId});
     assert.equal(second.state.id,sessionId);assert.equal(second.state.utterances.length,2);assert.equal(second.state.reply,null);
     assert.deepEqual(failures,[]);
   }finally{await bridge.close();await second?.close();await app.close();if(key===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=key;}

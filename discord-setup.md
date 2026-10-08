@@ -1,98 +1,108 @@
-# Discordへワイガヤを参加させる
+# 管理者向け：固定Discord運用の設定・移行
 
-Discordの通常のボイスチャンネルへ、記録・進行補助のBotとして参加させる。AIは引き続きOpenAIのみを使う。既存の会議サーバーへ記録を保存し、Discord側の音声入出力を追加する構成である。
+対象：PR #1 / `feat/meeting-lifecycle-minutes`。利用者は固定VCで開始するだけ。管理者が固定VC・フォーラム・閲覧ロール・参加者への事前告知を導入時に設定する。本書の反映手順はリリースゲートであり、開発作業中に本番Botの更新や投稿は行っていない。
 
-発言条件・停止動作・保存内容・制限の詳細は [Discord版の現行仕様](discord-spec.md) を参照する。
+## 設定を一度だけ行う
 
-2026年10月8日、Bot「我ヶ谷」の認証、指定サーバーへの追加済み確認、`/waigaya` のサブコマンド登録、Gateway接続を確認した。実ボイスチャンネルへの参加と2人分の文字起こし保存も確認した。参加者の端末での読み上げの聞こえ方は、まだ未確認である。
-
-現在のBotはバックグラウンドプロセスとして起動している。ログは `data/discord-bot.log`、PIDは `data/discord-bot.pid` に保存する。OS再起動後の自動起動は設定していない。再起動時は会議サーバーを起動してから、以下の `npm run discord` でBotを起動する。既に動いている場合は重複起動しない。
-
-## 最初にDiscordで行う操作
-
-1. [Discord Developer Portal](https://discord.com/developers/applications) で「New Application」を選び、名前を「我ヶ谷」にする。現在のアプリは作成済みなので、この操作は新規構築時のみ行う。
-2. 「General Information」のApplication IDを控える。
-3. 「Bot」でBotトークンを発行し、この作業フォルダー内の `seacret/discord-token.txt` に値だけを1行で保存する。トークンはチャットへ送らない。
-4. Discordの設定で開発者モードを有効にし、参加させるサーバーのメニューからIDをコピーする。Application IDとサーバーIDは公開の識別番号で、トークンとは異なる。
-5. [.env.discord.example](.env.discord.example) を `.env.discord` へコピーし、2つのIDを設定する。ファイルはサーバー上に置く。
-
-「Message Content Intent」「Server Members Intent」はこの実装では使わない。BotはGuilds・GuildVoiceStatesを利用し、スラッシュコマンドから動作する。[Gateway Intents](https://docs.discord.com/developers/events/gateway#gateway-intents)
-
-BotトークンとOpenAIキーは別物である。OpenAIの既存キーは `.env.local` の設定をそのまま使う。
-
-## 招待・コマンド登録・起動
-
-作業フォルダーで次を実行する。
+Node.js 24.17以上を用意する。既存の `.env.local` / `.env.discord` を上書きしない。新規環境だけ例からコピーする。
 
 ```bash
-# 公開のIDから招待URLを表示。Discord APIは呼ばない。
-npm run discord:setup
+npm ci
+cp .env.example .env.local
+cp .env.discord.example .env.discord
+npm run discord:auth
 ```
 
-表示された招待URLを開き、指定したサーバーへBotを追加する。必要なのは「チャンネルを見る」「メッセージを送信」「接続」「発言」の権限で、管理者権限は要求しない。スコープは `bot` と `applications.commands` を使う。[Botの招待](https://docs.discord.com/developers/topics/oauth2)
+`.env.local` に `OPENAI_API_KEY_FILE`、`.env.discord` に `DISCORD_BOT_TOKEN_FILE` を指定する。値だけ一行の既存キーファイルを再利用できる。両プロセスへ同じ `WAIGAYA_DISCORD_SERVICE_TOKEN_FILE` を設定する。キーやトークンの値をGit・ログ・チャットに載せない。`discord:auth` は既存ファイルを上書き・表示しない。
+
+```dotenv
+# .env.discord（既存アプリ・サーバーを維持）
+DISCORD_APPLICATION_ID=1557731232727441429
+DISCORD_GUILD_ID=1279446749970436236
+DISCORD_BOT_TOKEN_FILE=seacret/discord-token.txt
+WAIGAYA_DISCORD_SERVICE_TOKEN_FILE=seacret/discord-service-token.txt
+
+# この固定設定とGuild IDは .env.local にも同じ値を指定する
+WAIGAYA_DISCORD_VOICE_CHANNEL_ID=<実際の通常VCのID>
+WAIGAYA_DISCORD_MINUTES_FORUM_ID=<実際の議事録フォーラムのID>
+WAIGAYA_DISCORD_RESPONSE_POLICY=on_call
+WAIGAYA_DISCORD_EMPTY_GRACE_MS=180000
+WAIGAYA_DISCORD_AUTO_PUBLISH=true
+# 任意・Bot側だけ。STT表記揺れの呼称をカンマ区切り
+WAIGAYA_DISCORD_ADDRESS_NAMES=ワイガヤ,わいがや,我ヶ谷,我が谷
+WAIGAYA_DISCORD_CONTROL_ROLE_IDS=
+```
+
+固定VC・フォーラムの実IDは未設定の例示であり、チャンネル名から推測しない。Discordの開発者モードから「IDをコピー」で確認する。文字列 `<...>` を実値に置き換える。通常VCとGuildForumだけに対応し、ステージや通常テキストを固定先として指定できない。
+
+Bot側は固定IDが必須。会議サーバー側にも指定すれば、Botとの不一致を登録時に拒否する。サーバー側で省略した場合だけ、認証済みBotが実チャンネル検査後にポリシーをSQLiteへ登録する。登録・履歴は再起動後も残る。旧setupやDBの既定保存先より固定設定を優先する。固定設定の変更は導入作業として行い、旧未処理ジョブを新しい公開先へ無断移送しない。
+
+`on_call` は議事録＋声の呼びかけ応答、`minutes` は音声一切なし、`facilitator` は任意の自律進行。毎回のモード選択は不要。`auto_publish=false` は管理用の非公開保存運用で、人の確認が必要な旧ポリシーを保つ。
+
+## Discord権限と告知
+
+Privileged Gateway IntentsはOFFでよい。Guilds / GuildVoiceStatesを使う。BotのAdministratorは不要。
+
+| 固定先 | Botの必要権限 |
+|---|---|
+| 通常VC | ViewChannel / Connect / Speak / SendMessages（VCチャット通知） |
+| 議事録フォーラム | ViewChannel / SendMessages / AttachFiles / SendMessagesInThreads / ReadMessageHistory |
+| 任意のアーカイブ・ロック復帰 | 実際に必要な場合だけManageThreads |
+
+Botはログイン後と開始前に存在・種別・所属ギルド・権限を確認する。投稿直前にも公開先の権限を検査する。必須タグを使うなら `議事録` や `未確認` など、AI未確認版に適用できる既存タグを設定する。「確認済み」しか使えないフォーラムでは投稿しない。Botはタグを新設しない。
+
+**議事録は親フォーラムを見られる全員に公開される。会議専用の非公開スレッドではない。** 管理者が閲覧ロールを設定し、固定VCに参加する全員へクラウドSTT、原音声非保存、文字起こし保持、AI未確認議事録の自動公開を事前に知らせる。VCチャットの開始通知はその告知を補う。途中参加者へDMでも通知するが、DM拒否では本人通知が届かないので、サーバールールやVC説明にも掲示する。Botの存在だけを同意の代用にしない。
+
+[DiscordフォーラムFAQ](https://support.discord.com/hc/en-us/articles/6208479917079-Forum-Channels-FAQ)、[discord.js ForumChannel](https://discord.js.org/docs/packages/discord.js/main/ForumChannel%3AClass)
+
+## コマンド登録と起動
 
 ```bash
-# /waigaya を指定サーバーへ登録する。Discord APIを呼ぶ。
-# 同名コマンドの作成・更新のみで、他のコマンドは削除しない。
+npm run discord:setup
 npm run discord:setup -- --register
-
-# 会議サーバーは別プロセスで起動済みのままにする。
+# サーバーを先に起動
+npm start
+# 別ターミナルでBotを起動
 npm run discord
 ```
 
-Botを起動しただけでは通話へ参加しない。指定したサーバーで、人がコマンドを実行してから参加する。PiからDiscordへ接続するため、会議UIをインターネットに公開する必要はない。音声用UDP通信はDiscordへ届く必要がある。[Voice接続](https://docs.discord.com/developers/topics/voice-connections)
+固定設定のコマンド登録で、古いモード選択・保存先変更などを通常一覧から隠す。登録後も古いsetup / destinationの要求は固定先を変更できない。通常はstart一回→声で質問→全員退出だけ。非常時はend、記録停止はpause、再開はresume、AIだけ停止はquiet。旧stopは記録を止めない。
 
-## 通話での使い方
+Botを起動してもVCへ入らず録音しない。再起動後、終了途中のジョブはVC接続せずに続行する。録音中だった会議に人が戻っていても停止を維持し、resumeで明示再開する。無人なら同一会議の退出猶予から最終処理を進める。
 
-同じボイスチャンネルに参加してから操作する。
+## 訂正・障害時だけ使う操作
 
-| 操作 | コマンド |
-|---|---|
-| Botを参加させ、記録を始める | `/waigaya start`。議題を省略するとチャンネル名を使う |
-| 会話を整理し、音声で返答してもらう | `/waigaya ask` |
-| AIの読み上げ・自律発言を止める | `/waigaya stop`。記録は続ける |
-| 自律発言を再開する | `/waigaya auto enabled:true` |
-| 自律発言を止める | `/waigaya auto enabled:false` |
-| 記録を終えて退出させる | `/waigaya leave` |
+- `minutes` は開始者・管理者・管理ロールが元VCの閲覧権限を持つ場合にだけ、議事録・原文・JSONを非公開取得できる。原発言訂正は要再確認と再生成、議事録項目訂正は新しい未確認版を作り、同じ投稿へ追記する。
+- 「人の確認を付けて追記」は任意。実際の確認者と時刻を別版へ保存する。旧AI未確認版を書き換えず、個別決定の全員合意にも変換しない。
+- 生成失敗は `minutes action:retry` で再生成する。元データは削除しない。
+- 権限・必須タグ・容量など未送信が明確な失敗は設定を直す。自動試行は最大3回なので、停止後はminutesから再生成して新しい版の処理を進められる。
+- 結果不明は管理者が `reconcile action:inspect`。既存投稿が見つかれば紐付ける。直接見つけたURLは `action:link url:<Discord投稿URL>`。完全照合で未投稿を確認できた場合のみ `action:retry` の最終確認を使う。10分の待機や探索上限があり、無条件再送しない。
 
-開始時は、音声をOpenAIへ送って記録することをDiscord上で参加者へ表示する。`/waigaya ask` は依頼時点までの確定発言をもとに回答を作り、依頼者に文字で表示した後、人の発話終了を判定して1秒経過したら音声で返す。読み上げボタンは不要である。生成中の会話の追加・未確定の文字起こし更新で、回答を取り消さない。確定発言の訂正・議題変更・明示的な停止・接続消失は取り消しの対象となる。生成後の返答は60秒まで待機し、中断した読み上げを自動再開しない。同時に複数の依頼が届いても、回答を重複生成しない。Botと違うチャンネルからの操作は受け付けない。
+通知は開始者へのDMに会議IDと分類だけ。本文を付けない。DMを閉じている場合はstatus / minutesから状態を確認する。Discordが削除されてもSQLite原本、版、公開予約は残る。記録全欠損・空会議は通常の議事録投稿と区別する。
 
-Botは1つのボイスチャンネルで動く。Stageチャンネル、DMの通話、同時に複数の会議へ参加する機能は対象外である。Botの自動参加は行わない。記録開始後は自律発言が既定で有効になり、会話の区切りで整理や質問をする。
+## 本番反映・バックアップ・ロールバック
 
-## 自律進行の条件
+本番反映は管理者の明示的な作業として行う。新版の実通話受け入れを先に別のテスト環境で済ませ、[チェックリスト](docs/manual-acceptance.md)に結果を記入する。
 
-通常の会話では `ask` を入力する必要はない。新しい意味のある確定発言が3件、または合計60文字以上増え、人の発話が約1.8秒途切れた時に検討する。相づちだけでは呼び出さない。検討中やAIの再生中に別の検討を重ねず、モデルの呼び出し間隔は最短45秒とする。参加者がいない時には呼び出さない。
+1. 会議中でないことを確認し、旧Botを通常停止、次に旧会議サーバーを停止する。終了途中・送信結果不明の会議は事前に記録する。
+2. 停止したDB、設定、旧コミット、Node版を保存する。SQLiteの一貫したバックアップ例：
 
-モデルは人同士の会話が順調な時はholdを選び、必要な時だけ短い整理や一つの質問を出す。完了済みの同じ文を繰り返さない。人が話し始めたら音声を停止する。`stop` は自律発言も止めるので、再開時は `auto enabled:true` を使う。
-
-AIへの入力では長い発言IDと話者名を依頼ごとの略記に変換し、返った根拠を元の発言IDへ戻して検証する。確定した会話本文は削らず、決定とAIの再生履歴も渡す。送信形式の重複を減らし、文字数上限を120,000文字に設定している。極端に長い会議の文脈を段階的に要約する機能は未実装である。
-
-## 音声と記録の仕組み
-
-```text
-Discordの参加者ごとの音声
-  → Opus復号 → 48kHz/2ch PCM → 24kHz/1ch PCM
-  → OpenAI GPT Transcribe
-  → 話者名とDiscord IDを添えて既存の会議へ保存
-
-/waigaya ask
-  → 既存のGPTによる整理・質問
-  → 依頼時点の会話への短い回答をDiscordに表示
-  → 発話終了を待つ → OpenAI TTS → PCM変換 → Discordへ再生
+```bash
+mkdir -p backups/pre-fixed-ops
+python3 - <<'PY'
+import sqlite3
+with sqlite3.connect('data/waigaya.sqlite') as source:
+    with sqlite3.connect('backups/pre-fixed-ops/waigaya.sqlite') as target:
+        source.backup(target)
+PY
 ```
 
-発話ごとに音声認識へ接続し、接続準備中の音声は一時保持する。会話がない間の無音を常時送る構成ではない。同時に話す人は別々に認識するため、音声認識の使用量は参加者ごとの送信音声の合計になる。通話時間そのものとは一致しない。
+3. バックアップを別の検証用ディレクトリへ復元し、旧原発言・revision・議事録・監査・公開履歴を新版で読めることを確認する。秘密値付き設定・DB・バックアップはGitへ追加しない。
+4. 新しい固定ID・権限・告知を設定し、対象コミットを取得して `npm ci` とコマンド再登録を行う。サーバーを先に、Botを後に起動する。初回起動は手動で監視する。
+5. 自動録音が始まらないことを確認し、テスト会議を明示開始して受け入れを行う。
 
-話者名はDiscord上の表示名とユーザーIDであり、現実の本人確認ではない。発言の時刻は受信開始時刻とPCMの長さから求めた目安である。途中で切れた音声を完全な発言とは扱わない。録音ファイルをDiscordから保存する機能は未実装で、保存するのは文字起こし・決定・AIの再生履歴である。
+今回のDB変更は既存JSONへの固定ポリシー・終了ジョブ・確認属性の追加と、既存 `session_parts` への `voiceRequests` 配列保存。DROPや履歴削除はない。前PRの旧全文スナップショットからの追加移行も維持している。ただし旧コードは新フィールドを含むDBの読み取りを保証しないので、**ロールバックは旧コードと更新前DBを組にする**。
 
-会議IDは開始時にDiscordへ表示する。保存した記録は会議サーバーの `/api/sessions/会議ID/markdown` から取得できる。ブラウザの会議とDiscordの会議は別に作成し、同じ会議IDを持つAPI・データベースで制御する。Web UIで過去のDiscord会議を選ぶ一覧は未実装である。
+不具合時は新Bot、次に新サーバーを停止し、更新後DBも別名で保全する。旧コード・旧依存関係・旧設定・更新前バックアップを戻し、旧コマンドを再登録、旧サーバー→旧Botの順で起動する。更新後の会議を消さず保全し、Discordに投稿された版と予約を照合してから運用を再開する。公開済み投稿があるのに更新前DBだけで再公開しない。
 
-Discordの送信イベントには無音パケットも含まれるため、PCMの音量が60ms続いた時点で人の発話開始と判定する。発話開始時に再生を止めるが、依頼された返答の検討は続ける。音量の閾値は初期値であり、実マイクの声量・環境音に応じた調整が必要になる場合がある。再生後の割り込み停止では生成音声も取り消す。停止後に遅れて届く音声は、発言の識別番号と会話状態を確認して拒否する。通常の退出時は最後の確定結果を待つ。通信障害や待ち時間の上限に達した場合は、未確定分が残る可能性がある。
-
-## 現時点の確認範囲
-
-DAVE対応の `@discordjs/voice` を使用し、この端末でDAVE・Opus・FFmpegの依存関係を確認した。PCM変換、受信音声の一時保持、話者の付与、会議サーバーとのHTTP/WebSocket接続、停止後の音声拒否、使用量の保存はローカルで検証した。これだけでは実Discordでの接続・音声品質を証明しない。
-
-Discordの音声受信は公式APIとして十分に文書化されておらず、ライブラリ側も安定動作を保証していない。Bot設定後は、PC・スマホの参加者、重なった声、チャンネル移動、割り込み停止、DAVEの音声受信を実際のサーバーで確認する。[ライブラリの注意事項](https://discord.js.org/docs/packages/voice/0.19.2)
-
-この追加機能によってAIのモデルは変更していない。TTSの提供終了・移行期限などは [README](README.md) と [モデル選定資料](docs/ai-waigaya-models.md) を参照する。
+保存期限・自動削除、OSによる常駐監視は未実装。管理者の保存・バックアップ方針を定める。

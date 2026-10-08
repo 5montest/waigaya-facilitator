@@ -1,3 +1,5 @@
+import { applyStatePatch } from '/state-sync.js';
+import { AutonomousFacilitator } from '/autonomy.js';
 const $ = id => document.getElementById(id);
 let state, config, ws, editingId = null, mic = null, starting = false, transcriptKey = null;
 let ready = false, transcribing = false, heartbeat = 0, voice = false, above = 0, below = 0;
@@ -47,9 +49,10 @@ function render(next) {
   const previousCandidate = state?.candidate?.id, prevEpoch = state?.outputEpoch; state = next;
   if (currentEpoch !== null && state.outputEpoch !== currentEpoch) halt();
   if (prevEpoch !== state.outputEpoch && !state.playback) halt();
-  if (!$('settingsDialog').open) { $('topic').value = state.topic; $('phase').value = state.phase; }
+  if (!$('settingsDialog').open) { $('topic').value = state.topic; $('phase').value = state.phase; $('meetingMode').value = state.mode; }
   $('topicTitle').textContent = state.topic; $('topicTitle').hidden = state.topic === 'ワイガヤ';
-  $('export').href = endpoint('markdown');
+  $('export').href = endpoint('transcript.md'); $('minutesExport').href = endpoint('minutes.md'); $('minutesExport').hidden = !state.minutesHistory?.length;
+  $('meetingFinish').disabled = ['finalizing','completed','finalize_failed'].includes(state.status); $('meetingPause').disabled = !['recording','empty_grace'].includes(state.status);
   const transcriptChanged = renderTranscript();
   const status = { thinking: '考えています…', ready: state.candidate ? '提案' : 'いまは発言を見送ります。', needs_refresh: '会話が進みました。もう一度聞けます。', failed: 'もう一度お試しください。' };
   $('aiPanel').hidden = !state.playback && !['thinking', 'ready', 'needs_refresh', 'failed'].includes(state.request?.status);
@@ -61,9 +64,9 @@ function render(next) {
     const detail = document.createElement('details'); detail.open = Boolean(detailOpen);
     displayText(detail, 'summary', '根拠を見る'); displayText(detail, 'div', state.candidate.reason); displayText(detail, 'div', evidenceText(state.candidate.evidence)); $('candidate').append(detail);
   } else if (state.playback) displayText($('candidate'), 'div', state.playback.text);
-  $('speak').hidden = !state.candidate; $('discard').hidden = !state.candidate; $('stop').hidden = !state.playback;
-  $('voiceNotice').hidden = !state.candidate && !state.playback;
-  $('speak').disabled = !state.candidate || !mic || !ready || voice || !state.inputHealthy || !config.audio.configured;
+  $('speak').hidden = !state.candidate || state.mode === 'minutes' || state.quiet; $('discard').hidden = !state.candidate; $('stop').hidden = !state.playback;
+  $('voiceNotice').hidden = state.mode === 'minutes' || state.quiet || (!state.candidate && !state.playback);
+  $('speak').disabled = state.mode === 'minutes' || state.quiet || !state.candidate || !mic || !ready || voice || !state.inputHealthy || !config.audio.configured;
   $('speak').title = !mic ? '開始してから読み上げられます' : voice ? '人の発話が終わるまで待ちます' : '';
   $('analyze').disabled = state.request?.status === 'thinking' || !state.utterances.some(u => u.final) || !config.models[$('model').value]?.configured;
   $('notes').replaceChildren();
@@ -83,9 +86,10 @@ function render(next) {
 }
 function audioStatus() {
   $('audioStatus').textContent = !mic ? (starting ? '準備中' : '待機中') : !ready || !state?.inputHealthy ? '接続中' : voice ? '聞いています' : transcribing ? '記録中' : 'マイク接続中';
+  $('audioStatus').textContent += ` · ${{minutes:'議事録のみ',assistant:'呼びかけ応答',facilitator:'AIワイガヤ'}[state?.mode] || ''}${state?.status === 'paused' ? ' · 一時停止' : state?.status === 'completed' ? ' · 会議終了' : state?.status === 'finalizing' ? ' · 議事録生成中' : state?.minutesStatus === 'failed' ? ' · 議事録生成失敗' : ''}`;
   $('audioStatus').classList.toggle('active', Boolean(mic && ready && state?.inputHealthy));
-  $('micLabel').textContent = starting ? '準備中' : mic ? '終了' : '開始';
-  $('mic').classList.toggle('recording', Boolean(mic)); $('mic').disabled = starting;
+  $('micLabel').textContent = starting ? '準備中' : mic ? '記録を一時停止' : state?.status === 'paused' ? '記録を再開' : ['completed','finalizing','finalize_failed'].includes(state?.status) ? '会議終了' : '開始';
+  $('mic').classList.toggle('recording', Boolean(mic)); $('mic').disabled = starting || ['finalizing','completed','finalize_failed'].includes(state?.status);
 }
 function halt(notify = false) {
   if (currentEpoch !== null) blockedEpoch = currentEpoch;
@@ -119,7 +123,8 @@ function connect() {
   ws.onmessage = event => {
     if (state.id !== currentId) return;
     const e = JSON.parse(event.data);
-    if (e.type === 'state') render(e.state);
+    if(e.type==='state_patch'){try{render(applyStatePatch(state,e));}catch{socket({type:'resync'});}}
+    else if (e.type === 'state') render(e.state);
     else if (e.type === 'mic_ready') { ready = true; transcribing = e.transcribe; render(state); }
     else if (e.type === 'tts_start') { halt(); currentEpoch = e.epoch; blockedEpoch = null; playbackStart = 0; }
     else if (e.type === 'tts_chunk') chunk(e);
@@ -177,18 +182,28 @@ $('openSettings').onclick = () => { $('menuDialog').close(); $('topic').value = 
 $('openRecord').onclick = () => { $('menuDialog').close(); openDialog('recordDialog'); };
 for (const button of document.querySelectorAll('[data-close]')) button.onclick = () => button.closest('dialog').close();
 $('editDialog').addEventListener('close', () => { editingId = null; });
-$('mic').onclick = action(async () => { if (starting) return; if (mic) await stopMic(); else await startMic(); });
+$('mic').onclick = action(async () => { if (starting) return; if (mic) { await stopMic(); render(await api(endpoint('events'),{type:'lifecycle',action:'pause'})); } else { if(state.status === 'paused') render(await api(endpoint('events'),{type:'lifecycle',action:'resume'})); await startMic(); } });
 $('stop').onclick = action(async () => { halt(true); render(await api(endpoint('events'), { type: 'stop' })); });
-$('configure').onclick = action(async () => { render(await api(endpoint('events'), { type: 'configure', topic: $('topic').value, phase: $('phase').value })); $('settingsDialog').close(); });
+$('configure').onclick = action(async () => { render(await api(endpoint('events'), { type: 'configure', topic: $('topic').value, phase: $('phase').value, mode: $('meetingMode').value })); $('settingsDialog').close(); });
 $('utteranceForm').onsubmit = action(async () => { render(await api(endpoint('events'), { type: 'utterance', utterance: { text: $('text').value, speaker: null, final: true } })); $('text').value = ''; updateInput(); });
 $('editForm').onsubmit = action(async () => { if (!editingId) return; render(await api(endpoint('events'), { type: 'utterance', utterance: { id: editingId, text: $('editText').value, speaker: $('speaker').value || null, final: true } })); resetEdit(); });
 $('analyze').onclick = action(async () => { const m = config.models[$('model').value]; render(await api(endpoint('analyze'), { provider: m.provider, model: m.model })); $('timeline').scrollTop = $('timeline').scrollHeight; });
+$('meetingPause').onclick = action(async () => { await stopMic(); render(await api(endpoint('events'),{type:'lifecycle',action:'pause'})); $('menuDialog').close(); });
+$('meetingFinish').onclick = action(async () => { if(!confirm('記録を終了し、議事録の下書きを作成しますか？')) return; await stopMic(); render(await api(endpoint('finish'),{})); $('menuDialog').close(); });
 $('model').onchange = () => render(state);
 $('speak').onclick = action(async () => { await audioCtx?.resume(); if (voice || !ready) throw new Error('開始して、人の発話が終わってから読み上げられます。'); socket({ type: 'speak', candidateId: state.candidate?.id }); });
 $('discard').onclick = action(async () => render(await api(endpoint('events'), { type: 'discard' })));
 $('decisionForm').onsubmit = action(async () => { const u = state.utterances.find(u => u.id === $('decisionRef').value); render(await api(endpoint('events'), { type: 'decision', text: $('decisionText').value, evidence: u ? [{ utteranceId: u.id, revision: u.revision }] : [] })); $('decisionText').value = ''; $('decisionEntry').open = false; });
 $('sample').onclick = action(async () => { for (const [speaker, text] of [['A', '試作品を今月中に作りたいですね。'], ['B', '利用者の聞き取りが終わるまでは、仕様の確定には反対です。'], ['C', 'それなら、聞き取りと並行して捨ててもよい試作品を作る案はどうでしょう。']]) render(await api(endpoint('events'), { type: 'utterance', utterance: { speaker, text, source: 'sample', final: true } })); $('settingsDialog').close(); });
 $('newSession').onclick = action(async () => { await stopMic(); if (ws) { ws.onclose = null; ws.close(); } state = await api('/api/sessions', {}); localStorage.setItem('waigaya-session', state.id); resetEdit(); $('text').value = ''; updateInput(); render(state); connect(); $('menuDialog').close(); });
+const automaticBridge = {
+  get state(){ return state; }, get path(){return `/api/sessions/${state.id}`;},
+  api: (path,body) => api(path,body),
+  async ask(){ const result = await api(endpoint('analyze'),{provider:'openai',model:config.defaultModel,mode:'autonomous',trigger:'auto'}); const id=result.request.id; render(result);
+    const deadline=Date.now()+35000; while(Date.now()<deadline){if(state.request?.id!==id || state.request.status!=='thinking')return state;await new Promise(resolve=>setTimeout(resolve,100));} throw new Error('自律検討が時間内に完了しませんでした。'); },
+  async speakReply(requestId){const deadline=Date.now()+15000;while(Date.now()<deadline){if(state.reply?.requestId!==requestId||state.mode!=='facilitator'||state.quiet)throw new Error('候補が失効しました。');if(ready&&!voice&&state.inputHealthy&&!state.speaking&&Date.now()-state.lastVoiceAt>=1800){socket({type:'speak_reply',requestId});return;}await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('発言待ちを終了しました。');},
+};
+const facilitator = new AutonomousFacilitator(automaticBridge,{available:()=>Boolean(mic&&ready),onFailure:()=>{}});facilitator.start();
 try {
   config = await api('/api/config');
   if (!window.isSecureContext) {
@@ -207,4 +222,4 @@ try {
   if (saved) { try { state = await api(`/api/sessions/${saved}`); } catch {} }
   state ??= await api('/api/sessions', {}); localStorage.setItem('waigaya-session', state.id); render(state); updateInput(); connect();
 } catch (e) { error(e.message); }
-window.addEventListener('pagehide', () => { halt(); mic?.stream.getTracks().forEach(t => t.stop()); ws?.close(); });
+window.addEventListener('pagehide', () => { facilitator.close(); halt(); mic?.stream.getTracks().forEach(t => t.stop()); ws?.close(); });
