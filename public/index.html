@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"><meta name="theme-color" content="#0b1020"><title>ワイガヤ</title><link rel="stylesheet" href="/style.css?v=simple-1"></head>
+<body class="meeting-page">
+<main class="app">
+  <header class="topbar">
+    <div class="heading"><h1>ワイガヤ</h1><span id="topicTitle" class="subtitle"></span></div>
+    <span id="audioStatus" class="status" role="status">準備中</span>
+    <button id="openMenu" class="icon-button" aria-label="メニュー" title="メニュー"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></button>
+  </header>
+  <div id="connectionNotice" class="notice" hidden></div>
+  <div id="error" role="alert" hidden></div>
+  <section id="timeline" class="timeline" aria-label="会話">
+    <div id="empty" class="empty"><div class="empty-mark" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div><h2>話し合いを、ここに。</h2><p>「開始」で会話を記録します。</p></div>
+    <div id="utterances" class="transcript" role="log" aria-label="会話の記録"></div>
+    <section id="aiPanel" class="ai-panel" aria-label="AIの提案" hidden>
+      <div class="message-meta"><span class="ai-label">AI</span><span id="analysisStatus" role="status"></span></div>
+      <div id="candidate" class="candidate"></div>
+      <div class="candidate-actions"><button id="speak" class="primary" hidden>読み上げる</button><button id="discard" class="quiet" hidden>見送る</button><button id="stop" class="danger" hidden>AIを止める</button><span id="voiceNotice" class="hint" hidden>AIの生成音声</span></div>
+    </section>
+  </section>
+  <footer class="composer">
+    <form id="utteranceForm" class="input-box"><textarea id="text" aria-label="発言" placeholder="文字でも追加できます" maxlength="12000" rows="1" required></textarea><button type="submit" class="send-button" aria-label="発言を追加" title="追加"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button></form>
+    <div class="toolbar"><button id="mic" class="primary mic-button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2m-7 9v3m-4 0h8"/></svg><span id="micLabel">開始</span></button><span id="sessionHint" class="hint">音声を記録・AIの声は生成音声</span><button id="analyze" class="quiet" disabled>AIに聞く</button></div>
+    <div id="recordings" class="recordings"></div>
+  </footer>
+</main>
+<dialog id="menuDialog" class="sheet compact"><div class="sheet-head"><h2>メニュー</h2><button class="icon-button" data-close aria-label="閉じる">×</button></div><div class="menu-list"><button id="openRecord">決定・メモ</button><a id="export" href="#">記録を保存</a><button id="openSettings">設定</button><button id="newSession">新しい会議</button></div></dialog>
+<dialog id="settingsDialog" class="sheet"><div class="sheet-head"><h2>設定</h2><button class="icon-button" data-close aria-label="閉じる">×</button></div>
+  <label>議題<input id="topic" value="ワイガヤ" maxlength="200"></label><label>進め方<select id="phase"><option value="diverge">広げる</option><option value="organize">整理する</option><option value="decide">決める条件を確認</option></select></label>
+  <details class="advanced"><summary>詳細設定</summary><label>AIモデル<select id="model"></select></label><label class="toggle"><input id="transcribe" type="checkbox" checked>音声を文字起こし</label><label>文字起こしモデル<select id="sttModel"></select></label><label>発話検知の感度<input id="threshold" type="range" min="0.004" max="0.06" step="0.002" value="0.016"></label><p id="credentials" class="hint"></p><p id="usage" class="hint"></p><p class="hint">話者は自動で区別しません。実会議での品質は検証中です。</p><button id="sample" class="quiet">サンプルを追加</button><a href="/lan" class="settings-link">LANで音声を使う手順</a></details><button id="configure" class="primary wide">保存</button>
+</dialog>
+<dialog id="recordDialog" class="sheet"><div class="sheet-head"><h2>決定・メモ</h2><button class="icon-button" data-close aria-label="閉じる">×</button></div><h3>確認した決定</h3><div id="decisions"></div><details id="decisionEntry"><summary>決定を追加</summary><form id="decisionForm"><label>確認した内容<textarea id="decisionText" rows="2" required maxlength="4000"></textarea></label><label>根拠の発言<select id="decisionRef" required></select></label><button type="submit" class="primary">決定を記録</button></form><p class="hint">操作担当者の確認として残します。</p></details><h3>AIのメモ</h3><div id="notes"></div></dialog>
+<dialog id="editDialog" class="sheet"><div class="sheet-head"><h2>発言を修正</h2><button id="cancelEdit" class="icon-button" data-close aria-label="閉じる">×</button></div><form id="editForm"><label>話者<input id="speaker" placeholder="不明なら空欄" maxlength="80"></label><label>発言<textarea id="editText" rows="4" maxlength="12000" required></textarea></label><button type="submit" class="primary wide">修正を保存</button></form></dialog>
+<script type="module" src="/app.js?v=simple-1"></script>
+</body></html>

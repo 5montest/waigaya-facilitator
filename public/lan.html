@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ワイガヤ｜LANで音声を使う</title><link rel="stylesheet" href="/style.css"></head><body>
+<header><h1>LANで音声を使う</h1></header><main>
+<section class="panel"><p>別端末のブラウザでマイクを使うには、HTTPSの画面を開きます。<a href="https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia">ブラウザのマイク利用条件</a>初回は、このワイガヤ用の証明書を端末に入れて信頼する設定が必要です。</p>
+<ol><li><a href="/lan-ca.crt">ワイガヤ用の証明書をダウンロード</a>します。</li><li>端末で証明書をインストールし、信頼する設定を行います。下の説明を参照してください。</li><li><a id="httpsLink" href="#">HTTPSのワイガヤを開く</a>と、マイクの利用を許可できます。</li></ol>
+<p id="connection" class="hint"></p><p class="hint">証明書のSHA-256指紋：<span id="fingerprint"></span></p><p class="hint">この証明書は今回のLAN用です。利用を終えた端末では削除できます。</p></section>
+<section class="panel"><h2>端末での設定</h2>
+<p><strong>iPhone・iPad：</strong> ダウンロードしたプロファイルを「設定」からインストールした後、「一般」→「情報」→「証明書信頼設定」で「Waigaya LAN CA」を信頼します。<a href="https://support.apple.com/en-us/102390">Appleの手順</a></p>
+<p><strong>Android：</strong> 設定の「セキュリティ」又は「暗号化と認証情報」からCA証明書としてインストールします。設定名は機種によって異なります。</p>
+<p><strong>Windows：</strong> 証明書を開き、現在のユーザーの「信頼されたルート証明機関」にインストールします。</p>
+<p><strong>macOS：</strong> キーチェーンアクセスで証明書を追加し、SSL用に信頼します。ブラウザが独自の証明書ストアを使う場合は、そのブラウザにも設定してください。</p>
+<p>設定後にHTTPSの画面を開き直します。証明書のエラーが続く場合は、端末の信頼設定と接続先のIPアドレスを確認してください。</p>
+<p class="hint">HTTPとHTTPSの画面では保存した会議の選択が別になります。新しい画面で会議を始めてください。録音を開始した端末が音声入力・再生を担当します。</p><a href="/">HTTPの操作画面へ戻る</a></section>
+</main><script type="module" src="/lan.js"></script></body></html>

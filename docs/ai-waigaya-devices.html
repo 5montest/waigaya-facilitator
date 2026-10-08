@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ワイガヤのAI進行・記録係｜デバイス・処理配置</title><style>
+:root{color-scheme:light;--ink:#223445;--muted:#607183;--blue:#215f7b;--line:#dce4ea}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:var(--ink);background:#eef2f5;font:16px/1.9 system-ui,-apple-system,"Noto Sans JP","Yu Gothic",Meiryo,sans-serif}
+.layout{display:grid;grid-template-columns:260px minmax(0,960px);gap:28px;max-width:1290px;margin:32px auto;padding:0 20px}
+nav{position:sticky;top:24px;align-self:start;max-height:calc(100vh - 48px);overflow:auto;padding:20px;background:#fff;border:1px solid var(--line);border-radius:12px;font-size:13px;line-height:1.65}nav .eyebrow{font-weight:700;color:var(--blue);letter-spacing:.06em;margin-bottom:8px}nav p{margin:0 0 14px;color:var(--muted)}nav ul{list-style:none;padding:0;margin:0}nav li{margin:0;border-top:1px solid #edf1f5}nav a{display:block;padding:8px 0;text-decoration:none;color:#365365}nav a:hover{color:var(--blue);text-decoration:underline}
+main{min-width:0;background:white;padding:46px 52px;border:1px solid var(--line);border-radius:12px;box-shadow:0 10px 32px #203d5010}
+h1{font-size:29px;line-height:1.55;letter-spacing:.01em;margin:0 0 22px;color:#193b51}h1+p{font-size:13px;color:var(--muted);border-bottom:1px solid var(--line);padding-bottom:20px}h2{font-size:21px;line-height:1.55;margin:44px 0 18px;padding-top:16px;border-top:2px solid #e0e9ef;color:#214b62;scroll-margin-top:28px}h3{font-size:18px;margin:28px 0 12px;color:#214b62}p{margin:14px 0}a{color:#176386;text-underline-offset:3px}strong{font-weight:700;background:#e7f2f6;padding:0 2px}
+table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.75;margin:22px 0}th{background:#eaf1f5;text-align:left;color:#24495f}th,td{border:1px solid var(--line);padding:10px 12px;vertical-align:top;overflow-wrap:anywhere}tbody tr:nth-child(even){background:#fafcfd}thead{display:table-header-group}tr{break-inside:avoid}
+code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;font-size:.86em;overflow-wrap:anywhere;background:#edf2f5;border-radius:4px;padding:2px 4px}pre{white-space:pre-wrap;background:#f3f6f8;border:1px solid var(--line);padding:18px;border-radius:8px;line-height:1.65;font-size:14px;overflow-wrap:anywhere;tab-size:4}pre code{background:transparent;padding:0;white-space:pre-wrap}
+figure{margin:25px 0;border:1px solid var(--line);border-radius:10px;padding:14px;background:#fcfdff;break-inside:avoid}svg{width:100%;height:auto;display:block}figcaption{font-size:12px;color:var(--muted);margin:8px 0 0;line-height:1.7}.footer{margin-top:42px;border-top:1px solid var(--line);padding-top:18px;font-size:12px;color:var(--muted)}
+@media(max-width:950px){.layout{display:block;margin:16px auto;padding:0 12px}nav{position:static;max-height:none;margin-bottom:16px}nav .toc{columns:2;column-gap:24px}nav li{break-inside:avoid}main{padding:28px}h1{font-size:25px}}
+@media(max-width:580px){main{padding:22px 16px}nav .toc{columns:1}table{font-size:12px}th,td{padding:7px 6px}h2{font-size:19px}h1{font-size:23px}}
+@page{size:A4;margin:16mm 14mm} @media print{html{scroll-behavior:auto}body{background:white;font-size:10pt;line-height:1.75}.layout{display:block;margin:0;padding:0;max-width:none}nav{display:none}main{border:0;padding:0;border-radius:0;box-shadow:none}h1{font-size:20pt}h1+p{font-size:9pt}h2{font-size:14pt;margin:24px 0 10px;padding-top:12px;break-after:avoid}h3{font-size:12pt;break-after:avoid}p{orphans:3;widows:3}table{font-size:8.5pt;margin:14px 0}th,td{padding:6px 8px}pre{font-size:8.5pt;padding:12px;break-inside:auto}figure{padding:8px}a{color:inherit;text-decoration:underline}strong{background:none}.footer{font-size:8pt}}
+</style></head><body>
+<p style="margin:1rem;padding:1rem;border:1px solid #ccc">設計・選定時の参考資料。現行の動作は <a href="../discord-spec.md">Discord版の現行仕様</a>、確認状況は <a href="validation.md">検証記録の要約</a> を参照してください。</p><div class="layout"><nav aria-label="資料の目次"><div class="eyebrow">AI進行・記録係 / デバイス・処理配置</div><p>2026.10.07 · v0.1<br>未実装の設計案<br>音声・文字起こしのクラウド送信可</p><div class="toc">
+<ul>
+<li><a href="#1-端末とaiの実行場所は別々に選べる">1. 端末とAIの実行場所は別々に選べる</a></li>
+<li><a href="#2-pcと会議用音声機器で始める">2. PCと会議用音声機器で始める</a></li>
+<li><a href="#3-スマホクラウドでも構成できる">3. スマホ＋クラウドでも構成できる</a></li>
+<li><a href="#4-jetsonは組み込み用途に合わせて選ぶ">4. Jetsonは組み込み用途に合わせて選ぶ</a></li>
+<li><a href="#5-完全ローカルを求めるならモデルから必要な機器を決める">5. 完全ローカルを求めるなら、モデルから必要な機器を決める</a></li>
+<li><a href="#6-送れるデータに合わせて処理の配置を変える">6. 送れるデータに合わせて処理の配置を変える</a></li>
+<li><a href="#7-機器を購入する前に一回の会議で測る">7. 機器を購入する前に、一回の会議で測る</a></li>
+</ul>
+</div>
+</nav><main><h1 id="ワイガヤのai進行記録係端末で音声を制御しai処理の置き場所を選ぶ">ワイガヤのAI進行・記録係：端末で音声を制御し、AI処理の置き場所を選ぶ</h1>
+<p>作成日：2026年10月7日／版：0.1／位置づけ：デバイス・処理配置の設計案</p>
+<p>音声も文字起こしもクラウドへ送れる前提で、最初の試作にはPCとUSB会議用スピーカーフォンを使い、議論の整理や質問の生成をクラウドAIに任せる案をすすめる。<strong>音声の取得・再生・割り込み停止は端末内で実行する。</strong> スマホへの移行やJetsonへの組み込みは、会議形態と運用条件に合わせて選ぶ。</p>
+<p>本資料は、<a href="ai-waigaya-design.html">進行・記録の設計資料</a>を補う。クラウドへの音声・文字起こし送信は利用条件として確認済みで、利用人数と所有機器は未確定である。機器ごとの性能は未測定であり、推奨は現時点の設計判断を示す。</p>
+<p>2026年10月8日追記：MVPはOpenAIのみで構成し、既存キーで接続を確認した。PCのブラウザで音声を取得・再生し、端末で停止を制御する。現時点の操作と制約は <a href="../README.md">README</a>、モデルと費用は <a href="ai-waigaya-models.md">モデル選定資料</a> を参照する。</p>
+<p>LAN公開の追記：HTTPは <code>http://192.168.8.10:8765</code>、音声対応のHTTPSは <code>https://192.168.8.10:8766</code> で利用できる。別端末のマイク利用には証明書の信頼設定が必要で、HTTPの <code>/lan</code> に手順を用意した。</p>
+<h2 id="1-端末とaiの実行場所は別々に選べる">1. 端末とAIの実行場所は別々に選べる</h2>
+<p>スマホを使うことと、スマホ内で大きなAIモデルを動かすことは別の選択になる。スマホをマイク・スピーカー・操作画面として使い、文字起こしや議論の検討をクラウドで行う構成も作れる。Jetsonでも同様に、音声・映像処理を端末で行い、議論の検討だけをクラウドへ渡せる。</p>
+<table>
+<thead>
+<tr>
+<th>構成案</th>
+<th>向いている場面</th>
+<th>設計・運用で確かめること</th>
+<th>本提案での位置づけ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>スマホ＋クラウド</td>
+<td>持ち歩く、小規模な場で手軽に使う</td>
+<td>集音範囲、同時録音・再生、画面ロック、通信、充電</td>
+<td>携帯性を優先する候補</td>
+</tr>
+<tr>
+<td>PC＋クラウド</td>
+<td>対面会議で試作し、記録を確認する</td>
+<td>外付け音声機器、通信、保存方法</td>
+<td>クラウド利用可なら初期案</td>
+</tr>
+<tr>
+<td>PCで音声認識＋クラウドLLM</td>
+<td>音声の外部送信を避けたい</td>
+<td>日本語の音声認識速度、文字起こしの送信条件</td>
+<td>音声だけを端末内に留める案</td>
+</tr>
+<tr>
+<td>Jetson＋クラウドLLM</td>
+<td>固定設置、カメラ、ロボットと組み合わせる</td>
+<td>音声機器、冷却、メモリ、ARM向け実装</td>
+<td>組み込み用途の候補</td>
+</tr>
+<tr>
+<td>GPU搭載PC・対応Mac・室内サーバーで完結</td>
+<td>会議データを外部に送れない</td>
+<td>モデルの必要メモリ、同時処理、認識精度、保守</td>
+<td>完全ローカルの検証先</td>
+</tr>
+</tbody>
+</table>
+<p>表は実測の性能順位ではない。クラウドを使う案は、利用量に応じた費用とネットワーク条件も比較する。</p>
+<h2 id="2-pcと会議用音声機器で始める">2. PCと会議用音声機器で始める</h2>
+<p>初期構成は、既存のPC、USB接続の会議用スピーカーフォン、クラウドの音声認識・LLM・音声合成を基本とする。スピーカーフォンは、マイクとスピーカーを一体で扱う会議用機器を指す。機器またはアプリで、スピーカー音がマイクに戻ることへの対策を行う。</p>
+<pre><code class="language-text">会議用マイク → PCの音声入力
+                 ├→ 端末内の発話検出 → 発言許可・割り込み停止
+                 ├→ 端末内の記録・イベント保存
+                 └→ クラウド音声認識 → 文字起こし
+                                          ↓
+                              会話状態 → クラウドLLM
+                                          ↓
+                                    質問・整理の候補
+                                          ↓
+                             PCで現在の会話と照合する
+                                          ↓
+                        音声合成 → PCの再生 → 会議用スピーカー
+</code></pre>
+<p>この構成では、端末内の発話検出は「人が話したら停止する」ために使う。クラウドの音声認識へ送る区間をその検出結果だけで切ると、発言の冒頭や短い声を落とす可能性があるため、音声認識の送信・区間分けは別に設計する。</p>
+<p>クラウドLLMは候補の文を返す。端末が発言前に論点、候補の期限、人の発話を確認してから再生する。人の声を検出したら、端末はクラウドからの返答を待たずに再生を止め、その後、遠隔の生成も取り消す。通信中の古い音声片は再生しない。</p>
+<p>クラウドを利用しても、割り込み停止を端末内に置けば、その処理にネットワーク往復を挟まずに済む。ただし、質問を作るまでの時間には、音声認識・LLM・音声合成・通信の待ち時間が残る。応答の速さと停止の速さは分けて測る。</p>
+<p>PCを先に使う理由は、記録と候補を同時に表示し、外付け音声機器や処理ログを確認しやすいことにある。大きなLLMをクラウドで実行するなら、端末に高性能GPUを用意することは初期の必須条件にしない。</p>
+<h2 id="3-スマホクラウドでも構成できる">3. スマホ＋クラウドでも構成できる</h2>
+<p>スマホでは、録音、端末内の発話検出、候補表示、音声再生、割り込み停止をアプリに持たせる。AIへの接続は自分たちのバックエンドを経由する案とし、サービスの長期的な認証情報を配布するアプリへ埋め込まない。クラウドの音声対話機能を使う場合も、AIの音声をいつ再生するかはアプリ側で制御する。</p>
+<p>最初は前面で動くWebアプリとして試す案がある。ブラウザの音声取得仕様には、マイクの取得とエコーキャンセルを要求する設定がある。ただし、設定を要求しただけで、会議室での集音や自己音声の除去が十分になるとは限らない。対応するブラウザと実機で確認する。<a href="https://www.w3.org/TR/mediacapture-streams/">W3C：Media Capture and Streams</a></p>
+<p>画面を消したまま長時間使う場合は、ネイティブアプリの検討が必要になる。Androidには、マイクを使うフォアグラウンドサービスの開始条件・権限に制約がある。iOSでは、録音と再生のための音声セッションと、背景動作の設定を行う。スマホでは背景動作が一律に不可能という意味ではなく、OSに合った実装と検証が必要である。<a href="https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start">Android：マイク等の権限を使うサービスの開始制約</a>、<a href="https://developer.apple.com/documentation/avfaudio/avaudiosession/category-swift.struct/playandrecord">Apple：録音と再生の音声セッション</a></p>
+<p>スマホ一台をテーブルに置く構成は、短い試用の入口になる。人数や距離が増えた場合は、離れた人の声と重なった発言を確認する。対応する外付け会議用音声機器を使う案もあるが、接続方法と同時録音・再生を実機で確かめる。初期試作では、複数のスマホから同じ部屋の音を同時送信する構成を避け、重複取り込みの処理を増やさない。</p>
+<h2 id="4-jetsonは組み込み用途に合わせて選ぶ">4. Jetsonは組み込み用途に合わせて選ぶ</h2>
+<p>Jetsonを選ぶ理由は、会議テーブルの固定端末にする、カメラから人の存在や顔向きを検出する、ロボットの首・LEDなどを制御する、といった運用にある。議論を整理するAIまで全部載せる必要はない。発話検出や停止制御、必要に応じた音声認識、映像処理をJetsonに置き、LLMをクラウドに置く案が考えられる。各処理の速度は使用モデルと実装で測る。</p>
+<p>例としてJetson Orin Nano Super Developer Kitの公式仕様は、メモリ8GB、67 INT8 TOPS、電力7〜25Wを示している。これは開発キットの公称仕様であり、会議用音声機器を含めた実測消費電力や、会話の応答速度を示すものではない。<a href="https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/nano-super-developer-kit/">NVIDIA：Jetson Orin Nano Super仕様</a></p>
+<p>MiniCPM-o 4.5の全二重処理については、公式READMEに、量子化した <code>llama.cpp-omni</code> の構成でNVIDIA GPUのメモリ12GB以上、またはApple M4 Maxのメモリ24GB以上という要件例がある。別のPyTorchデモはGPUメモリ28GB以上を要求する。これらは特定の実行経路の条件であり、8GBのOrin Nano Superで同じ処理が動くことを保証しない。<a href="https://github.com/OpenBMB/MiniCPM-V">OpenBMB：MiniCPMの実行条件</a></p>
+<p>以上から、本提案ではOrin Nano Superを、MiniCPM-o 4.5の音声・映像処理に加え、議事録の整理も常時並行実行する初期構成には選ばない。より小さいモデルを分けて動かす構成は検証対象になる。重い推論の負荷で停止制御が遅れないように、実行処理と優先度も分ける。</p>
+<p>既にJetsonが手元にあるなら、音声入力と端末内の停止制御から試せる。新しく購入する場合は、先に必要な処理の負荷と、カメラ・ロボットの必要性を確認する。</p>
+<h2 id="5-完全ローカルを求めるならモデルから必要な機器を決める">5. 完全ローカルを求めるなら、モデルから必要な機器を決める</h2>
+<p>音声も文字起こしも外部に送れない場合は、音声認識、LLM、音声合成をすべてローカルに置く。画面端末と推論用の機器は分けてもよい。例えば、スマホを操作画面とし、同じ室内ネットワークのPCでAI処理を行う構成がある。端末から室内PCへの送信も許容されない場合は、一台の機器内で完結させる。</p>
+<p>完全ローカルでも、音声認識・LLM・音声合成を分ける構成と、MiniCPM-o等で音声を統合処理する構成がある。ワイガヤでは記録の修正と介入条件の検証が必要なため、本提案では分割構成から始める。日本語の認識、重なった発言、質問の質を確認し、必要なモデルを決めてからメモリ・GPU・冷却を選ぶ。</p>
+<p>一つのモデルの重みが収まることだけでは、常時動作の判断はできない。音声認識や音声合成の同時実行、会話履歴の増加、OSと保存処理の使用メモリも含めて確認する。Jetsonの公称TOPSや、PCのGPUメモリだけで応答速度を比較しない。</p>
+<h2 id="6-送れるデータに合わせて処理の配置を変える">6. 送れるデータに合わせて処理の配置を変える</h2>
+<table>
+<thead>
+<tr>
+<th>利用条件</th>
+<th>端末・室内機器で行う処理</th>
+<th>クラウドで行う処理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>音声・文字起こしとも送信可</td>
+<td>音声入力・保存、発話検出、発言制御、再生</td>
+<td>音声認識、LLM、音声合成の候補</td>
+</tr>
+<tr>
+<td>音声の送信は不可、文字起こしは可</td>
+<td>上記に加えて音声認識</td>
+<td>LLM。音声合成には生成した発言文を送るため、別途送信条件を確認する</td>
+</tr>
+<tr>
+<td>会議データの外部送信が不可</td>
+<td>音声認識、LLM、音声合成を含む全処理</td>
+<td>利用しない</td>
+</tr>
+</tbody>
+</table>
+<p>音声を送らなくても、文字起こしから会議内容は伝わる。文字起こしだけを送る構成を、会議データ全体のローカル処理と同じ扱いにはしない。</p>
+<p>PCやJetsonを使う構成では、スマホを操作画面だけにする案もある。録音する端末、AIを実行する機器、画面を表示する端末を混同せず、データがどこに渡るかを図示して選ぶ。</p>
+<h2 id="7-機器を購入する前に一回の会議で測る">7. 機器を購入する前に、一回の会議で測る</h2>
+<p>まず手元のPCまたはスマホで候補表示まで動かし、音声入力と質問の有用性を確認する。音声出力を追加したら、次を実測する。</p>
+<table>
+<thead>
+<tr>
+<th>確認する項目</th>
+<th>比較に使う結果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>集音</td>
+<td>近い人・遠い人・同時発話の文字起こしと話者の区別</td>
+</tr>
+<tr>
+<td>停止</td>
+<td>人の声の開始からAIの音が止まるまでの時間</td>
+</tr>
+<tr>
+<td>応答</td>
+<td>依頼から文字起こし確定、候補完成、音声開始までを別々に測る</td>
+</tr>
+<tr>
+<td>継続運用</td>
+<td>予定する会議時間での温度、充電、入力断、画面ロックの影響</td>
+</tr>
+<tr>
+<td>計算資源</td>
+<td>音声認識・LLM・音声合成を同時に動かした場合のメモリと処理待ち</td>
+</tr>
+<tr>
+<td>通信と費用</td>
+<td>音声送信時間、LLM呼び出し回数、生成音声量、通信断時の挙動</td>
+</tr>
+</tbody>
+</table>
+<p>音声認識が従量課金なら、AIが黙っていても、音声を送っている時間が費用に影響し得る。料金体系は採用するサービスで確認する。費用を抑えるために音声を切る場合も、発言冒頭を落とさないかを検証する。</p>
+<p>候補表示で役立つことを確認できたら、端末内の割り込み停止を追加する。その後、携帯性を重視するならスマホ、固定設置や身体制御を重視するならJetson、データを外部へ送れないならローカル推論用のPC・サーバーへ進む。</p>
+<p>参照確認日：2026年10月7日。製品仕様と実行条件は各公式資料を参照し、構成の推奨と評価手順は本提案として記載した。</p><div class="footer">編集用の元資料：ai-waigaya-devices.md</div></main></div></body></html>

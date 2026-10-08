@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ワイガヤのAI進行・記録係｜モデル選定と費用</title><style>
+:root{color-scheme:light;--ink:#223445;--muted:#607183;--blue:#215f7b;--line:#dce4ea}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:var(--ink);background:#eef2f5;font:16px/1.9 system-ui,-apple-system,"Noto Sans JP","Yu Gothic",Meiryo,sans-serif}
+.layout{display:grid;grid-template-columns:260px minmax(0,960px);gap:28px;max-width:1290px;margin:32px auto;padding:0 20px}
+nav{position:sticky;top:24px;align-self:start;max-height:calc(100vh - 48px);overflow:auto;padding:20px;background:#fff;border:1px solid var(--line);border-radius:12px;font-size:13px;line-height:1.65}nav .eyebrow{font-weight:700;color:var(--blue);letter-spacing:.06em;margin-bottom:8px}nav p{margin:0 0 14px;color:var(--muted)}nav ul{list-style:none;padding:0;margin:0}nav li{margin:0;border-top:1px solid #edf1f5}nav a{display:block;padding:8px 0;text-decoration:none;color:#365365}nav a:hover{color:var(--blue);text-decoration:underline}
+main{min-width:0;background:white;padding:46px 52px;border:1px solid var(--line);border-radius:12px;box-shadow:0 10px 32px #203d5010}
+h1{font-size:29px;line-height:1.55;letter-spacing:.01em;margin:0 0 22px;color:#193b51}h1+p{font-size:13px;color:var(--muted);border-bottom:1px solid var(--line);padding-bottom:20px}h2{font-size:21px;line-height:1.55;margin:44px 0 18px;padding-top:16px;border-top:2px solid #e0e9ef;color:#214b62;scroll-margin-top:28px}h3{font-size:18px;margin:28px 0 12px;color:#214b62}p{margin:14px 0}a{color:#176386;text-underline-offset:3px}strong{font-weight:700;background:#e7f2f6;padding:0 2px}
+table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.75;margin:22px 0}th{background:#eaf1f5;text-align:left;color:#24495f}th,td{border:1px solid var(--line);padding:10px 12px;vertical-align:top;overflow-wrap:anywhere}tbody tr:nth-child(even){background:#fafcfd}thead{display:table-header-group}tr{break-inside:avoid}
+code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;font-size:.86em;overflow-wrap:anywhere;background:#edf2f5;border-radius:4px;padding:2px 4px}pre{white-space:pre-wrap;background:#f3f6f8;border:1px solid var(--line);padding:18px;border-radius:8px;line-height:1.65;font-size:14px;overflow-wrap:anywhere;tab-size:4}pre code{background:transparent;padding:0;white-space:pre-wrap}
+figure{margin:25px 0;border:1px solid var(--line);border-radius:10px;padding:14px;background:#fcfdff;break-inside:avoid}svg{width:100%;height:auto;display:block}figcaption{font-size:12px;color:var(--muted);margin:8px 0 0;line-height:1.7}.footer{margin-top:42px;border-top:1px solid var(--line);padding-top:18px;font-size:12px;color:var(--muted)}
+@media(max-width:950px){.layout{display:block;margin:16px auto;padding:0 12px}nav{position:static;max-height:none;margin-bottom:16px}nav .toc{columns:2;column-gap:24px}nav li{break-inside:avoid}main{padding:28px}h1{font-size:25px}}
+@media(max-width:580px){main{padding:22px 16px}nav .toc{columns:1}table{font-size:12px}th,td{padding:7px 6px}h2{font-size:19px}h1{font-size:23px}}
+@page{size:A4;margin:16mm 14mm} @media print{html{scroll-behavior:auto}body{background:white;font-size:10pt;line-height:1.75}.layout{display:block;margin:0;padding:0;max-width:none}nav{display:none}main{border:0;padding:0;border-radius:0;box-shadow:none}h1{font-size:20pt}h1+p{font-size:9pt}h2{font-size:14pt;margin:24px 0 10px;padding-top:12px;break-after:avoid}h3{font-size:12pt;break-after:avoid}p{orphans:3;widows:3}table{font-size:8.5pt;margin:14px 0}th,td{padding:6px 8px}pre{font-size:8.5pt;padding:12px;break-inside:auto}figure{padding:8px}a{color:inherit;text-decoration:underline}strong{background:none}.footer{font-size:8pt}}
+</style></head><body>
+<p style="margin:1rem;padding:1rem;border:1px solid #ccc">設計・選定時の参考資料。現行の動作は <a href="../discord-spec.md">Discord版の現行仕様</a>、確認状況は <a href="validation.md">検証記録の要約</a> を参照してください。</p><div class="layout"><nav aria-label="資料の目次"><div class="eyebrow">AI進行・記録係 / モデル選定</div><p>2026.10.08 · v0.3<br>OpenAIのみのMVP<br>実API接続と想定会話の比較済み<br>実会議の品質は検証前</p><div class="toc">
+<ul>
+<li><a href="#1-mvpopenai">1. MVPはOpenAIのモデルを役割ごとに使う</a></li>
+<li><a href="#2">2. 音声認識は区切り後の認識と逐次表示を比べる</a></li>
+<li><a href="#3-llm202">3. LLMは入力20万・出力2万トークンの同じ条件で比べる</a></li>
+<li><a href="#4">4. 音声合成は生成した使用量で計算する</a></li>
+<li><a href="#5-mvpllm1030162">5. MVPの音声認識とLLMは、会議1時間で$0.30〜1.62の試算</a></li>
+<li><a href="#6">6. 日本語ワイガヤの品質を別々に測る</a></li>
+<li><a href="#7">7. 軽量モデルへの切り替えは品質確認後に行う</a></li>
+<li><a href="#8">8. 接続確認は完了、実会議の品質を次に評価する</a></li>
+</ul>
+</div>
+</nav><main><h1 id="ai">ワイガヤのAI進行・記録係：モデル選定と費用</h1>
+<p>更新日：2026年10月8日／版：0.3／状態：OpenAIのみのMVPを実装、既存キーで接続確認済み</p>
+<p>MVPはOpenAIだけで構成する。音声認識・議論の検討・音声合成を分け、端末の発話検知と停止はモデルの応答を待たずに動かす。<strong>コストを抑える候補は比較するが、品質確認前に通常モデルを安価なモデルへ切り替えない。</strong></p>
+<p>前版で調べた他社モデルも比較資料として残す。MVPではSonioxなどの新たなプラットフォームへの登録は必要ない。公開料金の比較と、実APIで確認した結果を以下に分けて記載する。他社の料金表は2026年10月7日の確認値であり、MVP後の採用時に再確認する。</p>
+<h2 id="1-mvpopenai">1. MVPはOpenAIのモデルを役割ごとに使う</h2>
+<table>
+<thead>
+<tr>
+<th>部品</th>
+<th>初期設定</th>
+<th>比較・変更候補</th>
+<th>選定理由と限界</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>音声認識</td>
+<td><code>gpt-transcribe</code></td>
+<td><code>gpt-live-transcribe</code>、<code>gpt-realtime-whisper</code></td>
+<td>発話を区切ってから認識し、費用を抑える。途中の文字表示が必要ならライブ版へ変更</td>
+</tr>
+<tr>
+<td>整理・質問</td>
+<td><code>gpt-6.1-sol</code></td>
+<td><code>gpt-6-luna</code></td>
+<td>Solを評価の基準に置き、Lunaへ置き換えた際の条件保持・質問の質を確認する</td>
+</tr>
+<tr>
+<td>音声合成</td>
+<td><code>gpt-4o-mini-tts</code>、声は <code>marin</code></td>
+<td>継続運用時は <code>gpt-realtime-2.1-mini</code> へ移行評価</td>
+<td>人が承認した文章をストリームで読み上げる。現行スナップショットの提供終了に対応する必要がある</td>
+</tr>
+<tr>
+<td>発話検知・割り込み停止</td>
+<td>ブラウザ内の音量判定</td>
+<td>実機評価後に検知方法を改善</td>
+<td>LLMや文字起こしが遅れても端末側で再生を止める</td>
+</tr>
+</tbody>
+</table>
+<p><code>gpt-realtime-whisper</code> は正式な音声認識モデルで、発言内容の検討や音声生成は行わない。3種類の音声認識は同じ画面で切り替えられる。MVPでは自動の話者区別は行わず、話者を不明として記録する。<a href="https://developers.openai.com/api/docs/models/gpt-realtime-whisper">Whisper</a>、<a href="https://developers.openai.com/api/docs/guides/realtime-transcription">Realtime文字起こし</a></p>
+<p>この構成は品質検証の開始点である。上位モデルも誤るため、生成した発言は人が確認し、決定事項は人が記録する。実装・操作手順は <a href="../README.md">README</a> に記載した。</p>
+<h2 id="2">2. 音声認識は区切り後の認識と逐次表示を比べる</h2>
+<p>1本の音声を60分送る場合の公開料金を示す。税、無料枠、契約割引は含まない。</p>
+<table>
+<thead>
+<tr>
+<th>OpenAIのモデル</th>
+<th style="text-align: right;">音声1分</th>
+<th style="text-align: right;">音声60分</th>
+<th>MVPでの動き</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gpt-transcribe</code></td>
+<td style="text-align: right;">$0.0045</td>
+<td style="text-align: right;">$0.27</td>
+<td>発話終了又は12秒の区切りを送ってから認識</td>
+</tr>
+<tr>
+<td><code>gpt-live-transcribe</code></td>
+<td style="text-align: right;">$0.017</td>
+<td style="text-align: right;">$1.02</td>
+<td>話している途中の暫定結果を表示</td>
+</tr>
+<tr>
+<td><code>gpt-realtime-whisper</code></td>
+<td style="text-align: right;">$0.017</td>
+<td style="text-align: right;">$1.02</td>
+<td>話している途中の暫定結果を表示</td>
+</tr>
+</tbody>
+</table>
+<p><a href="https://developers.openai.com/api/docs/models/gpt-transcribe">Transcribeの料金・仕様</a>、<a href="https://developers.openai.com/api/docs/models/gpt-realtime-whisper">Whisperの料金・仕様</a>、<a href="https://developers.openai.com/api/docs/pricing">OpenAI料金</a>。Realtimeという接続方法だけで料金や結果の出方が同じになるわけではない。</p>
+<p>同じ24kHz PCM音声をWebSocketで送り、端末が発話の区切りを通知する。暫定結果は同じ発言を更新し、確定結果が前後して届いても音声の区切り順で記録する。時刻は送ったPCMの範囲であり、モデルが返した単語の時刻ではない。</p>
+<p>他社の候補は、MVP後の費用・品質比較の参考として残す。</p>
+<table>
+<thead>
+<tr>
+<th>サービス</th>
+<th style="text-align: right;">音声60分の目安</th>
+<th>採用時に確認する点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Soniox <code>stt-rt-v5</code></td>
+<td style="text-align: right;">約$0.12</td>
+<td>暫定・確定結果、話者区別、専門語、重なった発話</td>
+</tr>
+<tr>
+<td>Deepgram Nova-3、日本語指定</td>
+<td style="text-align: right;">$0.288、通常価格なら$0.462</td>
+<td>日本語と話者区別。確認日の料金は期間限定割引</td>
+</tr>
+<tr>
+<td>ElevenLabs Scribe v2 Realtime</td>
+<td style="text-align: right;">$0.39</td>
+<td>ライブAPIの日本語と話者区別</td>
+</tr>
+<tr>
+<td>Gemini 3.5 Transcribe Live</td>
+<td style="text-align: right;">約$0.54</td>
+<td>逐次結果、話者区別・修正の扱い</td>
+</tr>
+</tbody>
+</table>
+<p>料金出典：<a href="https://soniox.com/pricing">Soniox</a>、<a href="https://deepgram.com/pricing">Deepgram</a>、<a href="https://elevenlabs.io/pricing/api">ElevenLabs</a>、<a href="https://ai.google.dev/gemini-api/docs/pricing">Google</a>。SonioxとGoogleの時間単価は出力トークン等によって変わる目安である。価格の差を認識精度の順位として扱わない。</p>
+<p>否定、条件付きの賛成、担当者名、数値・期限の取り違えを重点的に評価する。音声認識が誤った内容を渡した場合、LLMだけを上位モデルにしても元の内容は取り戻せない。</p>
+<h2 id="3-llm202">3. LLMは入力20万・出力2万トークンの同じ条件で比べる</h2>
+<p>60分の会議で、40回の検討、1回平均5,000入力・500出力トークンを仮定する。出力には課金対象の思考トークンも含める。これは利用量の仮説であり、各社で同じ文章のトークン数が一致するわけではない。実測では各社の課金使用量で再計算する。</p>
+<p>単価は100万トークンあたりの米ドルで、キャッシュなし、通常のオンライン処理、短いコンテキストの料金を使う。入力20万は40回の合計であり、1回に20万を渡す想定ではない。</p>
+<table>
+<thead>
+<tr>
+<th>モデル</th>
+<th style="text-align: right;">入力単価</th>
+<th style="text-align: right;">出力単価</th>
+<th style="text-align: right;">仮定した60分のLLM費用</th>
+<th>評価で確認する役割</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPT-6 Luna</td>
+<td style="text-align: right;">$0.10</td>
+<td style="text-align: right;">$0.50</td>
+<td style="text-align: right;">$0.030</td>
+<td>低価格での介入判断と論点抽出</td>
+</tr>
+<tr>
+<td>Gemini 3.5 Flash-Lite</td>
+<td style="text-align: right;">$0.30</td>
+<td style="text-align: right;">$2.50</td>
+<td style="text-align: right;">$0.110</td>
+<td>同じ低価格帯での判断・整理</td>
+</tr>
+<tr>
+<td>DeepSeek Flash（V4.1）</td>
+<td style="text-align: right;">$0.15〜0.30</td>
+<td style="text-align: right;">$0.60〜1.20</td>
+<td style="text-align: right;">$0.042〜0.084</td>
+<td>時間帯料金を含む低価格候補</td>
+</tr>
+<tr>
+<td>Gemini 3.8 Flash</td>
+<td style="text-align: right;">$0.75</td>
+<td style="text-align: right;">$3.75</td>
+<td style="text-align: right;">$0.225</td>
+<td>MVP後の通常質問・整理の比較対象</td>
+</tr>
+<tr>
+<td>Claude Haiku 4.5</td>
+<td style="text-align: right;">$1.00</td>
+<td style="text-align: right;">$5.00</td>
+<td style="text-align: right;">$0.300</td>
+<td>低価格候補との費用・品質差</td>
+</tr>
+<tr>
+<td>GPT-6.1 Sol</td>
+<td style="text-align: right;">$2.00</td>
+<td style="text-align: right;">$10.00</td>
+<td style="text-align: right;">$0.600</td>
+<td>複数の意見や条件を保持する整理</td>
+</tr>
+<tr>
+<td>Claude Sonnet 5.5</td>
+<td style="text-align: right;">$2.00</td>
+<td style="text-align: right;">$10.00</td>
+<td style="text-align: right;">$0.600</td>
+<td>同じ会話での整理・質問の比較</td>
+</tr>
+</tbody>
+</table>
+<p>料金出典：<a href="https://developers.openai.com/api/docs/pricing">OpenAI</a>、<a href="https://ai.google.dev/gemini-api/docs/pricing">Google</a>、<a href="https://platform.claude.com/docs/en/about-claude/pricing">Anthropic</a>、<a href="https://api-docs.deepseek.com/quick_start/pricing/">DeepSeek</a>。役割の列は本提案の評価目的であり、品質順位を示さない。</p>
+<p>Gemini 3.8 Flashは2026年末までの料金を使った。公式に示された2027年1月からの単価は入力$1.50、出力$7.50で、同じ利用量なら$0.450になる。DeepSeekの幅はキャッシュなしの閑散・繁忙時間帯によるもので、会議時刻に合わせて見積もる。過去世代のGemini 3.1 Flash-Liteも入力$0.25・出力$1.50と安いが、初期評価は現行候補を中心にし、必要なら追加する。</p>
+<p>Googleの無料枠やBatch料金を、会議中の費用の前提にしない。Batch・Flexの安さは、その処理の待ち時間を許容できる用途で検討する。会議後の議事録整形は、会議中の介入と分けて計算する。</p>
+<h2 id="4">4. 音声合成は生成した使用量で計算する</h2>
+<p>MVPでは <code>gpt-4o-mini-tts</code> に承認文を送り、PCM音声を受信しながら再生する。日本語に対応するが、声は英語向けに最適化されているため、日本語の発音・自然さを実際に聞いて評価する。<a href="https://developers.openai.com/api/docs/guides/text-to-speech">音声合成の仕様</a></p>
+<p>公開料金は文字入力100万トークンあたり$0.60、音声出力100万トークンあたり$12である。MVPのバイナリ音声応答から実使用トークンを取得する集計は未実装のため、画面と試算ではTTS費用を不明として残す。未知の分単価を置いて総額を確定しない。<a href="https://developers.openai.com/api/docs/pricing">OpenAI料金</a></p>
+<p>現行の既定スナップショット <code>gpt-4o-mini-tts-2025-12-15</code> は2027年1月6日に提供終了予定である。短期のMVP検証に使い、継続運用では公式の移行先 <code>gpt-realtime-2.1-mini</code> で承認文の読み上げ・割り込み停止・費用を評価する。<a href="https://developers.openai.com/api/docs/deprecations">提供終了の案内</a></p>
+<p>他社候補の参考値は以下のとおり。AIの生成音声を3分、発言文を1,000文字と仮定した前版の比較で、MVPの費用ではない。</p>
+<table>
+<thead>
+<tr>
+<th>サービス</th>
+<th>公開料金の基準</th>
+<th style="text-align: right;">仮定した生成量の費用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Soniox <code>tts-rt-v2</code></td>
+<td>約$0.70／生成音声1時間</td>
+<td style="text-align: right;">約$0.035／3分</td>
+</tr>
+<tr>
+<td>Google Neural2</td>
+<td>$16／100万文字</td>
+<td style="text-align: right;">$0.016／1,000文字</td>
+</tr>
+<tr>
+<td>Google Chirp 3: HD</td>
+<td>$30／100万文字</td>
+<td style="text-align: right;">$0.030／1,000文字</td>
+</tr>
+<tr>
+<td>ElevenLabs Flash/Turbo</td>
+<td>$0.05／1,000文字</td>
+<td style="text-align: right;">$0.050／1,000文字</td>
+</tr>
+</tbody>
+</table>
+<p>料金出典：<a href="https://soniox.com/pricing">Soniox</a>、<a href="https://cloud.google.com/text-to-speech/pricing">Google Cloud</a>、<a href="https://elevenlabs.io/pricing/api">ElevenLabs</a>。停止しても既に生成した音声や送信文への課金が消えるとは限らない。再生した分だけで費用を集計しない。</p>
+<h2 id="5-mvpllm1030162">5. MVPの音声認識とLLMは、会議1時間で$0.30〜1.62の試算</h2>
+<p>前述のLLM入力20万・出力2万トークン、音声認識60分を仮定する。<strong>以下にはTTS費用を含めていない。総費用は各金額に音声合成等を加えた値になる。</strong></p>
+<table>
+<thead>
+<tr>
+<th>音声認識</th>
+<th>LLM</th>
+<th style="text-align: right;">STT＋LLM／会議1時間</th>
+<th>扱い</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPT Transcribe</td>
+<td>GPT-6.1 Sol</td>
+<td style="text-align: right;">$0.87＋TTS等</td>
+<td>MVPの初期設定</td>
+</tr>
+<tr>
+<td>GPT Transcribe</td>
+<td>GPT-6 Luna</td>
+<td style="text-align: right;">$0.30＋TTS等</td>
+<td>品質が同等と確認できた場合の節約候補</td>
+</tr>
+<tr>
+<td>GPT Live Transcribe / Realtime Whisper</td>
+<td>GPT-6.1 Sol</td>
+<td style="text-align: right;">$1.62＋TTS等</td>
+<td>途中の文字表示を使う場合</td>
+</tr>
+<tr>
+<td>GPT Live Transcribe / Realtime Whisper</td>
+<td>GPT-6 Luna</td>
+<td style="text-align: right;">$1.05＋TTS等</td>
+<td>逐次表示と軽量LLMの組み合わせ</td>
+</tr>
+</tbody>
+</table>
+<p>計算式は「音声認識＋LLM入力単価×0.20＋LLM出力単価×0.02」。会議後の議事録作成、再試行、通信・保存、サーバー運用、税、為替は含まない。使用量の仮説であり、上限ではない。</p>
+<p>LLMを常時呼ぶより、端末が会話状態を保持し必要なときだけ検討を依頼するほうが呼び出しを抑えられる。MVPは人による依頼で検討する。文字起こしはマイク起動中の音声を送るため、長時間の無音をバッファから消しても、送った時間を無料とは扱わない。</p>
+<p>LLM入力を5倍に増やせば入力料金も5倍になる。現在は黙って文脈を切り捨てず、入力の文字数上限を超えたら会議を分けるよう案内する。正確な記録を保った文脈抽出は今後の実装対象である。</p>
+<h2 id="6">6. 日本語ワイガヤの品質を別々に測る</h2>
+<p>評価用の会話と正解は、モデルの出力を見る前に人が用意する。上位モデルの回答をそのまま正解にはしない。初期の回帰確認には想定会話を使い、最終判断には実際の会議録音と、別の会議による検証も必要になる。</p>
+<table>
+<thead>
+<tr>
+<th>評価対象</th>
+<th>見る内容</th>
+<th>初期の採用条件案</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>音声認識</td>
+<td>日本語の文字誤り、専門語、否定、数値、話者取り違え</td>
+<td>重要語の誤りを人が確認し、比較対象より悪化した条件を把握する</td>
+</tr>
+<tr>
+<td>介入判断</td>
+<td>待つべき場面、呼びかけ、解消済みの質問、堂々巡り</td>
+<td>明示的依頼の見逃しと不要な介入を別々に集計する</td>
+</tr>
+<tr>
+<td>整理</td>
+<td>意見の違い、条件、未決事項、発言の根拠</td>
+<td>根拠のない決定・担当者・期限の確定は評価セットで0件</td>
+</tr>
+<tr>
+<td>質問</td>
+<td>一度に一つか、誘導していないか、議論に役立つか</td>
+<td>提供元を隠して参加者が5段階評価。平均4以上を初期目標にする</td>
+</tr>
+<tr>
+<td>音声合成</td>
+<td>読み間違い、聞き取り、声の自然さ、生成待ち</td>
+<td>同じ文章で聞き比べ、重大な内容の読み違いを残さない</td>
+</tr>
+<tr>
+<td>制御</td>
+<td>古い候補の取消、人の発話時の停止</td>
+<td>モデルが変わっても取消・停止の確認条件を満たす</td>
+</tr>
+</tbody>
+</table>
+<p>数値条件は本提案であり、実証済みの品質基準ではない。評価セットで誤り0件でも、未知の会話で誤りが出ない保証にはならない。初期の比較では、複数人、重なった声、沈黙、反対意見、皮肉、言い直し、専門語、長い文脈を含める。</p>
+<p>LLMだけを比較するときは、人が確認した同じ文字起こしを使う。次に各音声認識の出力を使って全体を比較する。これにより、LLMの違いと、入力の誤りによる影響を区別できる。</p>
+<h2 id="7">7. 軽量モデルへの切り替えは品質確認後に行う</h2>
+<p>MVPはGPT-6.1 Solを初期設定とし、GPT-6 Lunaと同じ文字起こしで比較する。上位という位置づけだけを品質の証明にしない。条件保持、未確認事項の扱い、質問の有用性を人が確認したうえで、品質基準を満たす最安の候補を通常処理に使う。</p>
+<p>40回中36回をLuna、4回をSolへ振り分ける場合、同じ平均トークン数ならLLM費用は$0.087、GPT Transcribeを加えて$0.357＋TTS等／時間となる。二段処理でSolがLunaの回答も検査する場合は、両方の費用と追加の遅延がかかる。</p>
+<p>切り替えには複数案の条件衝突や根拠の修正などの会話状態を使う。安価なモデルが論点を見落とすと切り替え判断自体も失敗するため、構成全体で評価する。自動切り替えはまだ実装・有効化していない。他社を加えた比較はMVP後に行える。</p>
+<h2 id="8">8. 接続確認は完了、実会議の品質を次に評価する</h2>
+<p>指定された既存キーをファイルから読み込み、2種類のLLM、3種類の音声認識、音声合成を実APIで確認した。キーを複製したり、ブラウザへ渡したりしない。</p>
+<p>4.05秒の生成音声「まず、利用者の聞き取り結果を確認しましょう。」は、3種類の音声認識で同じ文字列に確定した。これは短く明瞭な音声での接続確認である。複数人の重なりや雑音下での精度を示すものではない。<a href="validation.md">接続結果</a>、<a href="validation.md">生成音声</a></p>
+<p>同じ想定6会話で初回比較を実施し、指示を調整して再比較した。以下は調整後の1モデルにつき各会話1回の結果で、繰り返し測定した性能値ではない。</p>
+<table>
+<thead>
+<tr>
+<th>モデル</th>
+<th style="text-align: right;">構文・根拠参照が正常</th>
+<th style="text-align: right;">初期の行動条件に一致</th>
+<th style="text-align: right;">応答時間中央値</th>
+<th style="text-align: right;">6件のLLM概算</th>
+<th>人の品質採点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPT-6 Luna</td>
+<td style="text-align: right;">6/6</td>
+<td style="text-align: right;">6/6</td>
+<td style="text-align: right;">4.0065秒</td>
+<td style="text-align: right;">$0.001253</td>
+<td>未実施</td>
+</tr>
+<tr>
+<td>GPT-6.1 Sol</td>
+<td style="text-align: right;">6/6</td>
+<td style="text-align: right;">6/6</td>
+<td style="text-align: right;">7.892秒</td>
+<td style="text-align: right;">$0.022884</td>
+<td>未実施</td>
+</tr>
+</tbody>
+</table>
+<p>初回は両方とも、問いが解消済みの場面で担当者を尋ね、行動条件の一致は各5/6だった。依頼範囲外の確認を追加しないよう指示を調整すると、この場面の出力は整理へ変わった。<a href="validation.md">初回</a>、<a href="validation.md">調整後</a></p>
+<p>調整後も、Lunaは「価格と納期を確認する」という発言を「価格を先に確認する」と整理した。この順序の解釈は採点時に確認する必要がある。Solは順序を追加せずに整理した。また、「少し考えさせてください」という場面でSolは待機、Lunaは質問を返した。機械的な行動条件の通過だけで、内容の正しさや待つ判断まで合格とはしない。</p>
+<p>次は提供元を隠した採点と、複数人の録音・会議用マイクでの認識精度、エコー、割り込み停止の測定を行う。初回の費用・速度の差だけでLunaへの変更を決めない。試作版は文字起こしの追加・修正、候補の手動承認、割り込み停止、決定事項の確認、SQLite保存に対応している。</p><p class="footer">料金は公開値に基づく概算。実請求額と、日本語の実会議での品質は別途確認する。</p></main></div></body></html>

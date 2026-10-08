@@ -1,0 +1,33 @@
+{
+  "name": "waigaya-facilitator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.17"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env.local src/server.js",
+    "test": "node --test test/*.test.js",
+    "compare": "node --env-file-if-exists=.env.local scripts/compare.js",
+    "smoke:openai": "node --env-file-if-exists=.env.local scripts/smoke-openai.js",
+    "discord": "node --env-file-if-exists=.env.local --env-file-if-exists=.env.discord src/discord/bot.js",
+    "discord:setup": "node --env-file-if-exists=.env.local --env-file-if-exists=.env.discord scripts/discord-setup.js"
+  },
+  "dependencies": {
+    "@discordjs/opus": "^0.10.0",
+    "@discordjs/voice": "^0.19.2",
+    "ajv": "^8.17.1",
+    "discord.js": "^14.27.0",
+    "prism-media": "^1.3.5",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  },
+  "overrides": {
+    "@discordjs/node-pre-gyp": {
+      "tar": "^7.5.22"
+    }
+  }
+}
