@@ -4,6 +4,8 @@
 
 | 資料 | 内容 | HTML版 |
 |---|---|---|
+| [改善実装の差分](improvement-report.md) | P0・P1の追加内容、互換性、未対応要件 | — |
+| [実通話の受け入れチェック](manual-acceptance.md) | 更新・3モード・退出・訂正・共有・障害の手動確認 | — |
 | [全体設計](ai-waigaya-design.md) | 継続的な会話状態、発言制御、段階的な実装方針 | [HTML](ai-waigaya-design.html) |
 | [デバイス選定](ai-waigaya-devices.md) | PC・スマホ・Jetsonと処理の配置 | [HTML](ai-waigaya-devices.html) |
 | [モデル選定](ai-waigaya-models.md) | 他社も含む品質・費用の比較とOpenAIのみのMVP | [HTML](ai-waigaya-models.html) |
