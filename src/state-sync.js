@@ -1,5 +1,5 @@
 // Wire-compatible full snapshots for initial/resync connections; indexed deltas thereafter.
-export const partFields = ['utterances','minutesHistory','usage','contextMemory','aiTurns','publications'];
+export const partFields = ['utterances','minutesHistory','usage','contextMemory','aiTurns','publications','voiceRequests'];
 export function stateMessage(state, cache, { volatile = false } = {}) {
   if (!cache.state) { cache.state = JSON.parse(JSON.stringify(state)); return { type:'state',state:cache.state }; }
   const previous=cache.state,baseSequence=previous.sequence,set={},arrays={};

@@ -2,6 +2,9 @@ import { UserError as Error, UserError } from '../errors.js';
 import { Client, GatewayIntentBits, Events, MessageFlags, ChannelType, PermissionFlagsBits, AttachmentBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder,ChannelSelectMenuBuilder } from 'discord.js';
 import { joinVoiceChannel, entersState, VoiceConnectionStatus, EndBehaviorType } from '@discordjs/voice';
 import prism from 'prism-media';
+import { validateChannels,automaticTitle,policyMode } from './fixed-policy.js';
+import { VoiceAddressing } from './addressing.js';
+import { FixedCompletionWorker } from './completion.js';
 import { discordConfig } from './config.js';
 import { MeetingBridge } from './bridge.js';
 import { DiscordPlayback } from './playback.js';
@@ -22,7 +25,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
   if(!config.serviceToken) throw new Error('Bot・会議サーバー間の認証ファイルを設定してください。discord-setup.mdを参照してください。');
   const confirmations=new Confirmations(), publisher=new DiscordMinutesPublisher(), starts=new Map(), editorForms=new Map();
   const service=bridgeFactory(config.server,{serviceToken:config.serviceToken});
-  let meeting=null,starting=false,disposed=false;
+  let meeting=null,starting=false,disposed=false,completionWorker=null,policyReady=false,beginning=false;
   const safe = content => ({content,allowedMentions:{parse:[]}});
   const humanCount=channel=>[...channel.members.values()].filter(m=>!m.user.bot).length;
   async function stateFor(id){return service.api('/api/sessions/'+id);}
@@ -80,29 +83,34 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
   async function finish(current=meeting,{reason='manual',abort=false}={}){
     if(!current)return;
     if(current.finishing)return current.finishing;
-    current.closing=true;current.facilitator.close();current.grace.close();current.playback.close();
+    current.closing=true;current.addressing?.close();current.facilitator.close();current.grace.close();current.playback.close();
     current.finishing=(async()=>{
       client.off(Events.VoiceStateUpdate,current.onVoiceState);
-      await drain(current,{abort});current.connection.destroy();
-      current.closed=true;await current.bridge.close();
-      const state=await service.api(`/api/sessions/${current.bridge.state.id}/finish`,{reason});
-      if(meeting===current)meeting=null;
-      announceMinutes(state.id);
+      let state;
+      try{
+        await drain(current,{abort});
+        if(config.fixed)state=await service.api(`/api/sessions/${current.bridge.state.id}/finish`,{reason,deferGeneration:true});
+      }finally{
+        current.connection.destroy();current.closed=true;await current.bridge.close();if(meeting===current)meeting=null;
+      }
+      if(!config.fixed){state=await service.api(`/api/sessions/${current.bridge.state.id}/finish`,{reason});announceMinutes(state.id);}
+      else void completionWorker?.tick().catch(()=>{});
       return state;
     })();
     return current.finishing.finally(()=>{if(current.closed&&meeting===current)meeting=null;});
   }
   async function start(channel,topic,{sessionId,mode='minutes',ownerId,outputChannelId=null,noticeAt}={}){
+    if(config.fixed&&channel.id!==config.fixed.voiceChannelId)throw new Error('固定ボイスチャンネルから開始してください。');
     if(meeting||starting)throw new Error('別の会議を処理中です。/waigaya status で確認してください。');
     starting=true;let bridge,connection,playback,current;
     try{
       bridge=bridgeFactory(config.server,{serviceToken:config.serviceToken});
-      await bridge.open(topic,{sessionId,mode,discord:{guildId:channel.guild.id,voiceChannelId:channel.id,ownerId,outputChannelId,recordingNoticeSentAt:noticeAt,participantIds:[...channel.members.values()].filter(m=>!m.user.bot).map(m=>m.id)}});
+      await bridge.open(topic,{sessionId,mode,discord:{guildId:channel.guild.id,voiceChannelId:channel.id,ownerId,outputChannelId,recordingNoticeSentAt:noticeAt,...(config.fixed?{autoPublicationNoticeAt:noticeAt}:{}),participantIds:[...channel.members.values()].filter(m=>!m.user.bot).map(m=>m.id)}});
       connection=join({guildId:channel.guild.id,channelId:channel.id,adapterCreator:channel.guild.voiceAdapterCreator,selfDeaf:false,selfMute:false});
       await ready(connection,VoiceConnectionStatus.Ready,20000);
       current={bridge,connection,channel,channelId:channel.id,captures:new Map(),sttFailures:new Map(),blockedUntil:new Map(),activeSpeakers:new Set(),transcriptions:new Set(),acceptAudio:true,closing:false,closed:false};
       playback=new DiscordPlayback(bridge,{onFailure:()=>{void fault(current,'tts');console.error('AI音声の再生に失敗しました。文字起こしは継続します。');}});
-      current.playback=playback;meeting=current;connection.subscribe(playback.player);
+      current.playback=playback;current.addressing=config.fixed?new VoiceAddressing(current,{names:config.addressNames,onFailure:async()=>channel.send(safe('AIの音声回答だけに失敗しました。文字起こしは継続します。'))}):null;meeting=current;connection.subscribe(playback.player);
       bridge.on('failure',()=>{void fault(current,'connection',{gap:true}).finally(()=>finish(current,{reason:'connection_lost',abort:true})).catch(()=>{});});
       connection.on('error',()=>void finish(current,{reason:'connection_lost',abort:true}).catch(()=>{}));
       connection.on(VoiceConnectionStatus.Disconnected,()=>void finish(current,{reason:'connection_lost',abort:true}).catch(()=>{}));
@@ -126,7 +134,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
           const timer=setTimeout(()=>{if(meeting===current&&current.acceptAudio&&connection.receiver.speaking.users.has(userId))capture(userId);},failures>=3?60000:Math.min(30000,1000*2**(failures-1)));timer.unref();
         };
         try{
-          stt=transcribe({speaker,startedAt,emit:u=>{if(!current.closed){current.sttFailures.delete(userId);current.blockedUntil.delete(userId);if(bridge.state.health.stt==='failed')void bridge.enqueue({type:'health',kind:'stt',healthy:true}).catch(()=>{});void bridge.enqueue({type:'utterance',utterance:u}).catch(()=>{});}},
+          stt=transcribe({speaker,startedAt,emit:u=>{if(!current.closed){current.sttFailures.delete(userId);current.blockedUntil.delete(userId);if(bridge.state.health.stt==='failed')void bridge.enqueue({type:'health',kind:'stt',healthy:true}).catch(()=>{});void bridge.enqueue({type:'utterance',utterance:{...u,userId}}).then(()=>{const saved=bridge.state.utterances.find(v=>v.id===u.id);if(saved)current.addressing?.observe(saved,userId);}).catch(()=>{});}},
             onUsage:usage=>{if(!current.closed)void bridge.enqueue({type:'audio_usage',usage}).catch(()=>{});},
             onClose:()=>current.transcriptions.delete(stt),onError:()=>failed('stt')});
           current.transcriptions.add(stt);current.captures.set(userId,{opus,decoder,stt,activity});opus.pipe(decoder);
@@ -136,9 +144,9 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
         }catch{failed('stt');}
       };
       connection.receiver.speaking.on('start',capture);
-      current.facilitator=new AutonomousFacilitator(bridge,{available:()=>current.acceptAudio&&!current.asking&&playback.epoch===null&&humanCount(channel)>0,onFailure:()=>console.error('自律検討に失敗しました。文字起こしは継続します。')});current.facilitator.start();
-      current.grace=new EmptyGrace({
-        onEmpty:async()=>{if(!['recording','paused'].includes(current.bridge.state.status))return;current.acceptAudio=false;current.playback.stop(true);await bridge.api(bridge.path+'/events',{type:'lifecycle',action:'empty'});await notifyOwner(bridge.state,'通話の参加者が0人です。新しい音声は記録していません。3分以内に戻れば同じ会議を続けます。');},
+      current.facilitator=new AutonomousFacilitator(bridge,{available:()=>current.acceptAudio&&!current.asking&&!current.voiceAsking&&playback.epoch===null&&humanCount(channel)>0,onFailure:()=>console.error('自律検討に失敗しました。文字起こしは継続します。')});current.facilitator.start();
+      current.grace=new EmptyGrace({graceMs:config.fixed?.emptyGraceMs||180000,
+        onEmpty:async()=>{if(!['recording','paused'].includes(current.bridge.state.status))return;current.acceptAudio=false;current.addressing?.cancel();stopCapture(current);current.playback.stop(true);await bridge.api(bridge.path+'/events',{type:'lifecycle',action:'empty'});if(!config.fixed)await notifyOwner(bridge.state,'通話の参加者が0人です。新しい音声は記録していません。3分以内に戻れば同じ会議を続けます。');},
         onReturn:async()=>{if(current.closing||current.bridge.state.status!=='empty_grace')return;const returned=await bridge.api(bridge.path+'/events',{type:'lifecycle',action:'returned'});if(returned.status==='recording'){await bridge.recording(true);current.acceptAudio=true;}},
         onFinish:()=>finish(current,{reason:'empty_timeout'}),onError:()=>console.error('退出猶予の処理に失敗しました。/waigaya status を確認してください。')});
       current.grace.start();
@@ -149,31 +157,39 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
           void current.grace.members(humanCount(channel));
           if(next.channelId===current.channelId&&old.channelId!==next.channelId&&!next.member?.user.bot){
             void bridge.enqueue({type:'participant',userId:next.id}).catch(()=>{});
-            void notifyOwner({...bridge.state,ownerId:next.id},'この通話では会議の記録を管理しています。/waigaya status で記録中・一時停止を確認できます。記録中の音声はOpenAIへ送り、文字起こし・議事録はホストへ保存します。元音声は保存しません。');
+            void notifyOwner({...bridge.state,ownerId:next.id},'この通話では会議の記録を管理しています。/waigaya status で記録中・一時停止を確認できます。記録中の音声はOpenAIへ送り、文字起こし・議事録はホストへ保存します。元音声は保存しません。'+(config.fixed?`終了後は <#${config.fixed.minutesForumId}> の閲覧者へAI生成・未確認の議事録を自動公開します。`:''));
           }
         }
       };
       client.on(Events.VoiceStateUpdate,current.onVoiceState);await current.grace.members(humanCount(channel));return current;
     }catch{
-      current?.grace?.close();current?.facilitator?.close();playback?.close();connection?.destroy();await bridge?.close().catch(()=>{});
+      current?.addressing?.close();current?.grace?.close();current?.facilitator?.close();playback?.close();connection?.destroy();await bridge?.close().catch(()=>{});
       if(bridge?.state?.id)await service.api(bridge.path+'/events',{type:'lifecycle',action:'pause'}).catch(()=>{});
       if(meeting===current)meeting=null;
       throw new Error('通話に接続できません。記録は停止しました。権限・接続を確認し /resume を使ってください。');
     }finally{starting=false;}
   }
   async function begin(interaction,channel,topic,mode,outputChannelId){
+    if(beginning)throw new Error('開始処理中です。');beginning=true;try{
+    if(config.fixed){
+      if(!policyReady)await initializePolicy(interaction.guild);else await validateChannels(interaction.guild,config.fixed);
+      if(channel?.id!==config.fixed.voiceChannelId||humanCount(channel)===0)throw new Error('固定VCに参加してから開始してください。');
+      if(outputChannelId&&outputChannelId!==config.fixed.minutesForumId)throw new Error('公開先は固定フォーラムです。');
+      mode=policyMode(config.fixed);outputChannelId=config.fixed.minutesForumId;topic=topic||automaticTitle(channel);
+    }
     if(!Object.hasOwn(modes,mode))throw new Error('表示された会議モードから選んでください。');
     if(!channel||channel.type!==ChannelType.GuildVoice)throw new Error('通常のボイスチャンネルに入ってから開始してください。');
     if(meeting||starting)throw new Error('会議を処理中です。/waigaya status を使ってください。');
     const permissions=channel.permissionsFor(interaction.member);
     if(!permissions?.has([PermissionFlagsBits.ViewChannel,PermissionFlagsBits.Connect]))throw new Error('会議のチャンネルを閲覧・接続する権限が必要です。');
     if(outputChannelId===undefined)outputChannelId=(await service.api(`/api/guilds/${config.guildId}/settings`)).defaultMinutesChannelId;
-    if(outputChannelId){let target;try{target=await interaction.guild.channels.fetch(outputChannelId);}catch{throw new Error('保存先を取得できません。管理者が /setup で修正するか startのoutput_channelで選び直してください。');}requireOutput(target,interaction.member,interaction.guild.members.me);}
-    const notice = `記録を開始します。モード：${modes[mode]}。音声はOpenAIへ送信、文字起こし・下書きはホストに保存。元音声は保存しません。公開先：${outputChannelId?`<#${outputChannelId}>（人が確認・公開操作するまで本文投稿なし）`:'未指定・本文の自動公開なし'}。`;
+    if(outputChannelId){let target;try{target=await interaction.guild.channels.fetch(outputChannelId);}catch{throw new Error('保存先を取得できません。管理者が導入設定とチャンネル権限を確認してください。');}requireOutput(target,interaction.member,interaction.guild.members.me);}
+    const notice = config.fixed?`会議を記録します。${mode==='minutes'?'AI音声は停止しています。':'ワイガヤと呼びかけると音声で返答します。'}音声をOpenAIのSTT・AIへ送り、原音声は保存せず文字起こしを保持します。全員退出後に自動終了し、${config.fixed.autoPublish?`<#${outputChannelId}> を閲覧できる全員へAI生成・未確認の議事録を自動公開します。`:'議事録を非公開保存します。'}`:`記録を開始します。モード：${modes[mode]}。音声はOpenAIへ送信、文字起こし・下書きはホストに保存。元音声は保存しません。公開先：${outputChannelId?`<#${outputChannelId}>（人が確認・公開操作するまで本文投稿なし）`:'未指定・本文の自動公開なし'}。`;
     await channel.send(safe(notice));
     await interaction.editReply(safe(notice));
     const result=await start(channel,topic,{mode,ownerId:interaction.user.id,outputChannelId:outputChannelId||null,noticeAt:Date.now()});
-    await interaction.editReply({...safe(`記録中：${modes[mode]}。${mode==='minutes'?'AI音声は常にOFFです。':''}/pause は記録を一時停止、/quiet はAIだけ停止、/finish は会議を終了して議事録を作ります。`),components:[]});return result;
+    await interaction.editReply({...safe((config.fixed?`会議を記録しています。${mode==='minutes'?'AI音声は停止しています。':'ワイガヤと呼びかけると返答します。'}退出後は自動終了${config.fixed.autoPublish?`・議事録を <#${outputChannelId}> に投稿`:''}します。`:`記録中：${modes[mode]}。${mode==='minutes'?'AI音声は常にOFFです。':''}/pause は記録を一時停止、/quiet はAIだけ停止、/finish は会議を終了して議事録を作ります。`)),components:[]});return result;
+    }finally{beginning=false;}
   }
   async function preview(interaction,state){
     const base=`/api/sessions/${state.id}`;
@@ -182,7 +198,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
     const bridge=bridgeFactory(config.server,{serviceToken:config.serviceToken});bridge.state=state;
     try{attachments.push(...splitAttachments(await bridge.artifact('transcript.md'),'transcript.md',interaction.attachmentSizeLimit||8*1024*1024));}catch{await service.api(base+'/events',{type:'health',kind:'file_export',healthy:false}).catch(()=>{});}
     if(attachments.length>10)throw new Error('添付が10個を超えています。容量の大きい成果物を個別取得できるよう管理者へ相談してください。原本は保持しています。');
-    await interaction.editReply({...safe(`会議：${state.topic}\n状態：${statusLabels[state.status]||'状態確認が必要'}／議事録：${minutesLabels[state.minutesStatus]||'未作成'} 版${state.minutesVersion}\n${state.minutesHistory.at(-1)?.kind==='summary'?'途中要約（正式議事録ではありません）':'正式議事録'}／公開：${publicationLabels[publicationState(state)]}\n保存先：${state.outputChannelId?`<#${state.outputChannelId}>`:'未設定・非公開'}\n${state.lastError||''}\nファイルは本人だけに表示します。確認済み操作は議事録の確認であり、決定候補を合意として確定する操作ではありません。`),files:attachments,components:minutesControls(state,interaction.user.id)});
+    await interaction.editReply({...safe(`会議：${state.topic}\n状態：${statusLabels[state.status]||'状態確認が必要'}／議事録：${minutesLabels[state.minutesStatus]||'未作成'} 版${state.minutesVersion}\n${state.minutesHistory.at(-1)?.kind==='summary'?'途中要約（正式議事録ではありません）':'正式議事録'}／公開：${publicationLabels[publicationState(state)]}${state.fixedOperation&&state.minutesHistory.at(-1)?(state.minutesHistory.at(-1).approvedAt?'／人が確認済み':'／AI生成・未確認'):''}\n保存先：${state.outputChannelId?`<#${state.outputChannelId}>`:'未設定・非公開'}\n${state.lastError||''}\nファイルは本人だけに表示します。確認済み操作は議事録の確認であり、決定候補を合意として確定する操作ではありません。`),files:attachments,components:minutesControls(state,interaction.user.id)});
   }
   async function outputFor(state,interaction){
     if(!state.outputChannelId)throw new Error('保存先が未設定です。議事録画面の「保存先を選ぶ」か /destination を使い、確認して投稿をやり直してください。');
@@ -194,7 +210,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
     if(alreadyApproved&&!version.approvedAt)throw new Error('/minutes の「確認して投稿」を使ってください。');
     const output=await outputFor(state,interaction),prepared=await preparePublication({state,channel:output,actor:interaction.member,bot:interaction.guild.members.me,attachmentLimit:interaction.attachmentSizeLimit});
     const id=confirmations.issue(alreadyApproved?'publish':'reviewpublish',state,interaction.user.id);
-    await interaction.editReply({...safe(`保存先：${output.type===ChannelType.GuildForum?'フォーラム':'テキスト'} <#${output.id}>\n公開範囲：この親チャンネルを閲覧できる全員。会議だけの非公開投稿ではありません。\n対象：正式議事録 版${version.version}\nタグ：${prepared.tags.map(t=>safeText(t.name)).join('、')||'なし'}${prepared.thread?.archived?'（投稿を再開して追記します）':''}\n${prepared.content.slice(0,1100)}\n（短いプレビューです。全文は議事録の添付で確認してください。）\n\n確認は操作担当者によるものです。最終確認後に承認を保存して直ちに投稿します（60秒で失効）。`),components:confirmation(id,'確認してこの先へ投稿する')});
+    await interaction.editReply({...safe(`保存先：${output.type===ChannelType.GuildForum?'フォーラム':'テキスト'} <#${output.id}>\n公開範囲：この親チャンネルを閲覧できる全員。会議だけの非公開投稿ではありません。\n対象：正式議事録 版${version.version}${state.fixedOperation&&state.publications.some(p=>p.version===version.version&&p.status==='published')&&!version.approvedAt?`（人の確認は版${version.version+1}として追記）`:''}\nタグ：${prepared.tags.map(t=>safeText(t.name)).join('、')||'なし'}${prepared.thread?.archived?'（投稿を再開して追記します）':''}\n${prepared.content.slice(0,1100)}\n（短いプレビューです。全文は議事録の添付で確認してください。）\n\n確認は操作担当者によるものです。最終確認後に承認を保存して直ちに投稿します（60秒で失効）。`),components:confirmation(id,'確認してこの先へ投稿する')});
   }
   async function showDestination(interaction,state){
     const id=confirmations.issue('destination',state,interaction.user.id);
@@ -272,7 +288,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
           if(intent.operation==='retry'){
             requireAdministrator(interaction);if(publisher.busy(state.id))throw new Error('送信処理中です。完了後に照合してください。');
             await service.api(`/api/sessions/${state.id}/minutes`,{action:'publication_retry',version:intent.version,channelId:intent.channelId,reservationId:intent.reservationId,absenceToken:intent.absenceToken,actorId:interaction.user.id});
-            await interaction.editReply({...safe('未投稿の管理確認を記録しました。/minutes の確認して投稿から、保存先を再確認して再試行できます。'),components:[]});return;
+            await interaction.editReply({...safe('未投稿の管理確認を記録しました。固定運用は自動投稿を再試行します。旧会議はminutesから確認して投稿できます。'),components:[]});return;
           }
           if(['publish','reviewpublish'].includes(intent.operation)){
             if(state.minutesVersion!==intent.version||state.outputChannelId!==intent.channelId||(state.outputRevision||0)!==intent.outputRevision)throw new Error('版または保存先が変わりました。/minutes で確認し直してください。');
@@ -285,6 +301,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
         const state=await stateFor(id);await access(state,interaction);
         if(interaction.customId.split(':').at(-1)!==interaction.user.id)throw new Error('操作画面の実行者が異なるか旧画面です。/minutes から開き直してください。');
         if(Number(versionString)!==state.minutesVersion)throw new Error('議事録の版が変わりました。/minutes を使ってください。');
+        if(operation==='destination'&&config.fixed)throw new Error('保存先は固定フォーラムです。');
         if(operation==='destination'){await showDestination(interaction,state);return;}
         if(operation==='review'){await interaction.deferUpdate();await showReview(interaction,state);return;}
         if(['transcript','rawpage'].includes(operation)){
@@ -315,11 +332,14 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
         throw new Error('旧候補は使えません。/waigaya ask を使ってください。');
       }
       const action=interaction.options.getSubcommand();
-      if(action==='help'){await interaction.reply({...safe(help(interaction.options.getString('detail')==='developer')),flags:MessageFlags.Ephemeral});return;}
+      if(config.fixed&&['setup','destination'].includes(action))throw new Error('保存先は導入時の固定設定です。この操作では変更しません。');
+      if(config.fixed&&['mode','auto'].includes(action)&&!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild))throw new Error('応答方針の変更は管理者だけが操作できます。');
+      if(action==='help'){await interaction.reply({...safe(help(interaction.options.getString('detail')==='developer',Boolean(config.fixed))),flags:MessageFlags.Ephemeral});return;}
       if(action==='setup'){requireAdministrator(interaction);const target=interaction.options.getChannel('channel'),clear=interaction.options.getBoolean('clear')===true;if(!target&&!clear)throw new Error('議事録の保存先を選ぶか clear で解除してください。');if(target&&clear)throw new Error('保存先指定と解除はどちらか一つを選んでください。');if(target)requireOutput(target,interaction.member,interaction.guild.members.me);await interaction.deferReply({flags:MessageFlags.Ephemeral});await service.api(`/api/guilds/${config.guildId}/settings`,{channelId:target?.id||null,actorId:interaction.user.id});await interaction.editReply(safe(target?`既定の保存先を <#${target.id}> に登録しました。新しい会議に適用し、確認するまで投稿しません。`:'既定の保存先を解除しました。新しい会議は非公開です。'));return;}
       if(action==='start'){
         if(!channel)throw new Error('通話に入ってから /start を使ってください。');
         const topic=interaction.options.getString('topic')||`Discord：${channel.name}`,mode=interaction.options.getString('mode'),outputChannelId=interaction.options.getChannel('output_channel')?.id;
+        if(config.fixed){await interaction.deferReply({flags:MessageFlags.Ephemeral});await begin(interaction,channel,interaction.options.getString('topic')||undefined,policyMode(config.fixed),outputChannelId);return;}
         if(!mode){
           const id=confirmations.issue('start',{id:channel.id},interaction.user.id);starts.set(id,{ownerId:interaction.user.id,channelId:channel.id,topic,outputChannelId,expiresAt:Date.now()+60000});
           await interaction.reply({...safe('モードを選んで開始してください。「議事録のみ」はAI音声なしです。選択するまでは記録しません。'),flags:MessageFlags.Ephemeral,components:chooseMode(id)});return;
@@ -356,12 +376,13 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
       }
       if(action==='publish'){await showReview(interaction,state,{alreadyApproved:true});return;}
       if(action==='status'){
-        await interaction.editReply(safe(`会議：${state.topic}\n記録：${statusLabels[state.status]||'状態確認が必要'}／モード：${modes[state.mode]}／AI音声：${canSpeak(state)?'利用可':'OFF'}\n経過：約${state.startedAt?Math.floor(((state.endedAt||Date.now())-state.startedAt)/60000):0}分\n公開：${publicationLabels[publicationState(state)]}\n保存：ホストSQLite（${state.health.storage==='failed'?'直近の保存を確認できません':'最新保存確認済み'}）／議事録：${minutesLabels[state.minutesStatus]||'未作成'}\n新しい音声の外部送信：${state.status==='recording'?'記録する発話をOpenAIへ送信':'停止'}\n公開先：${state.outputChannelId?`<#${state.outputChannelId}>`:'未指定'}\n${state.lastError||''}\n障害：${Object.entries(state.health).filter(([,v])=>v==='failed').map(([k])=>healthLabels[k]||'状態確認が必要').join('、')||'検出なし'}`));return;
+        await interaction.editReply(safe(`会議：${state.topic}\n記録：${statusLabels[state.status]||'状態確認が必要'}／モード：${modes[state.mode]}／AI音声：${canSpeak(state)?'利用可':'OFF'}\n経過：約${state.startedAt?Math.floor(((state.endedAt||Date.now())-state.startedAt)/60000):0}分\n公開：${publicationLabels[publicationState(state)]}${state.fixedOperation&&state.minutesHistory.at(-1)?(state.minutesHistory.at(-1).approvedAt?'／人が確認済み':'／AI生成・未確認'):''}\n保存：ホストSQLite（${state.health.storage==='failed'?'直近の保存を確認できません':'最新保存確認済み'}）／議事録：${minutesLabels[state.minutesStatus]||'未作成'}\n新しい音声の外部送信：${state.status==='recording'?'記録する発話をOpenAIへ送信':'停止'}\n公開先：${state.outputChannelId?`<#${state.outputChannelId}>`:'未指定'}\n${state.lastError||''}\n障害：${Object.entries(state.health).filter(([,v])=>v==='failed').map(([k])=>healthLabels[k]||'状態確認が必要').join('、')||'検出なし'}`));return;
       }
+      if(action==='end'){if(meeting?.bridge.state.id!==state.id)throw new Error('記録中の会議がありません。');await finish(meeting);await interaction.editReply(safe('記録を終了しました。Botは退出し、議事録の処理を続けます。'));return;}
       if(action==='resume'&&!meeting){
         if(state.status!=='paused')throw new Error('再開可能な一時停止会議がありません。/start で新しく始めてください。');
         const vc=await access(state,interaction,{live:true});await interaction.editReply(safe('同じ会議の記録を明示的に再開します。音声をOpenAIへ送り、ホストに保存します。'));
-        await vc.send(safe(`会議の記録を再開します。モード：${modes[state.mode]}。音声をOpenAIへ送り、ホストへ保存します。本文の自動公開はしません。`));await start(vc,undefined,{sessionId:state.id});await interaction.editReply(safe('同じ会議IDで記録を再開しました。'));return;
+        await vc.send(safe(`会議の記録を再開します。モード：${modes[state.mode]}。音声をOpenAIへ送り、ホストへ保存します。${config.fixed&&config.fixed.autoPublish?`終了後は固定フォーラム <#${config.fixed.minutesForumId}> の閲覧者にAI生成・未確認の議事録を自動公開します。`:'本文の自動公開はしません。'}`));await start(vc,undefined,{sessionId:state.id});await interaction.editReply(safe('同じ会議IDで記録を再開しました。'));return;
       }
       if(['finish','leave'].includes(action)){
         if(!['recording','empty_grace','paused'].includes(state.status))throw new Error('会議は終了済みです。/minutes で議事録を確認してください。');
@@ -388,6 +409,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
         await current.bridge.api(current.bridge.path+'/summary',{});await interaction.editReply(safe('ここまでの要約を生成しています。会議は続けます。/minutes で文字とMarkdownを確認してください。'));return;
       }
       if(action==='ask'){
+        current.addressing?.cancel();
         if(current.asking)throw new Error('回答を準備中です。完了後に /ask を使ってください。');current.asking=true;
         try{const answer=await current.bridge.ask();const voice=interaction.options.getBoolean('voice')===true&&canSpeak(answer);
           await interaction.editReply(proposal(answer,{voice}));if(voice&&answer.reply?.action!=='hold')await current.bridge.speakReply(answer.reply.requestId);
@@ -402,13 +424,28 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
     }
   });
   client.on('error',()=>console.error('Discord接続に失敗しました。'));
+  async function initializePolicy(guild){
+    if(!config.fixed)return;
+    await validateChannels(guild,config.fixed);await service.api(`/api/guilds/${config.guildId}/fixed-policy`,config.fixed);policyReady=true;
+    if(!completionWorker){completionWorker=new FixedCompletionWorker({service,client,policy:config.fixed,publisher,notify:notifyOwner,hasActiveSession:id=>meeting?.bridge.state.id===id});completionWorker.start();}
+  }
   client.once(Events.ClientReady,async()=>{
-    try { for(const saved of await list()){await service.api(`/api/sessions/${saved.id}/minutes`,{action:'publication_recover'}); if(['recording','empty_grace','created'].includes(saved.status)){ await service.api(`/api/sessions/${saved.id}/events`,{type:'lifecycle',action:'pause'}); await service.api(`/api/sessions/${saved.id}/events`,{type:'health',kind:'connection',healthy:false,gap:{startedAt:null,endedAt:Date.now()}}); } } } catch { console.error('前回会議の復旧状態を確認できません。新規開始前に会議サーバーを確認してください。'); }
-    console.log('Discord Botを起動しました。起動だけでは記録しません。/start または /resume を使ってください。');
+    try {
+      if(config.fixed)await initializePolicy(await client.guilds.fetch(config.guildId));
+      for(const saved of await list()){
+        await service.api(`/api/sessions/${saved.id}/minutes`,{action:'publication_recover'});
+        if(['recording','created'].includes(saved.status)||!saved.fixedOperation&&saved.status==='empty_grace'){
+          await service.api(`/api/sessions/${saved.id}/events`,{type:'lifecycle',action:'pause'});
+          await service.api(`/api/sessions/${saved.id}/events`,{type:'health',kind:'connection',healthy:false,gap:{startedAt:null,endedAt:Date.now()}});
+        }
+      }
+      if(config.fixed)await completionWorker.tick();
+    }catch{policyReady=false;console.error('固定設定・前回会議の復旧を確認できません。記録は開始しません。管理者が設定を確認してください。');}
+    console.log('Discord Botを起動しました。起動だけでは記録しません。固定VCで /start を使ってください。');
   });
-  const quit=()=>void (async()=>{if(meeting){const current=meeting;current.closing=true;current.grace.close();current.facilitator.close();current.playback.close();await drain(current);await current.bridge.api(current.bridge.path+'/events',{type:'lifecycle',action:'pause'});current.closed=true;await current.bridge.close();current.connection.destroy();}client.destroy();})().finally(()=>process.exit(0));
+  const quit=()=>void (async()=>{completionWorker?.close();if(meeting){const current=meeting;current.closing=true;current.addressing?.close();current.grace.close();current.facilitator.close();current.playback.close();await drain(current);await current.bridge.api(current.bridge.path+'/events',{type:'lifecycle',action:'pause'});current.closed=true;await current.bridge.close();current.connection.destroy();}client.destroy();})().finally(()=>process.exit(0));
   process.once('SIGINT',quit);process.once('SIGTERM',quit);
   try{await client.login(config.token);}catch{client.destroy();throw new Error('Discordへログインできません。トークンと接続を確認してください。');}
-  return {client,get meeting(){return meeting;},close:async()=>{disposed=true;process.off('SIGINT',quit);process.off('SIGTERM',quit);if(meeting)await finish(meeting);client.destroy();}};
+  return {client,get meeting(){return meeting;},get completionWorker(){return completionWorker;},close:async()=>{disposed=true;completionWorker?.close();process.off('SIGINT',quit);process.off('SIGTERM',quit);if(meeting)await finish(meeting);client.destroy();}};
 }
 if(process.argv[1]?.endsWith('/discord/bot.js'))runBot().catch(()=>{console.error('Discord Botを起動できません。discord-setup.mdに従って設定してください。');process.exitCode=1;});

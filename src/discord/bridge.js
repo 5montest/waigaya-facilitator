@@ -52,10 +52,10 @@ export class MeetingBridge extends EventEmitter {
     const work=this.queue.then(()=>this.api(this.path+'/events',event,{minimal:true}));
     this.queue=work.catch(()=>{});work.catch(()=>this.emit('failure','文字起こし・使用量を会議へ保存できません。'));return work;
   }
-  async ask({automatic=false,signal}={}){
+  async ask({automatic=false,voiceRequest,signal}={}){
     await this.queue;
     if(signal?.aborted)throw new Error('検討を取り消しました。');
-    const response=await this.api(this.path+'/analyze',{provider:'openai',model:this.config.defaultModel,mode:automatic?'autonomous':'reply',...(automatic?{trigger:'auto'}:{})});
+    const response=await this.api(this.path+'/analyze',{provider:'openai',model:this.config.defaultModel,mode:voiceRequest?'voice_request':automatic?'autonomous':'reply',...(voiceRequest?{voiceRequest}:{}),...(automatic?{trigger:'auto'}:{})});
     const state=await this.waitFor(s=>s.request?.id!==response.request.id||s.request.status!=='thinking',35000,{signal});
     if(state.request?.id!==response.request.id)throw new Error('新しい依頼に切り替わりました。');
     return state;

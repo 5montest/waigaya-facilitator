@@ -12,7 +12,7 @@ export function initialMeeting(clock = Date.now) {
   return { mode: 'assistant', status: 'created', quiet: false, startedAt: null, endedAt: null, endReason: null,
     guildId: null, voiceChannelId: null, ownerId: null, participantIds: [], outputChannelId: null, outputRevision:0,destinationHistory:[],
     emptySince: null, autoFinishAfterMs: 180000, recordingNoticeSentAt: null,
-    minutesStatus: 'none', minutesVersion: 0, minutesHistory: [], publications: [], gaps: [], health: {}, lastError: null };
+    minutesStatus: 'none', minutesVersion: 0, minutesHistory: [], publications: [], voiceRequests: [], fixedOperation:false, publicationPolicy:'human_review', completionJob:null, gaps: [], health: {}, lastError: null };
 }
 export function transition(state, action, now = Date.now(), details = {}) {
   const active = activeStatuses.includes(state.status);
@@ -25,13 +25,14 @@ export function transition(state, action, now = Date.now(), details = {}) {
     state.status = 'paused'; state.emptySince = null;
   } else if (action === 'resume') {
     if (state.status !== 'paused') throw new Error('一時停止中のみ再開できます。');
+    if(state.fixedOperation&&state.quietBeforeRecovery!==undefined){state.quiet=state.quietBeforeRecovery;delete state.quietBeforeRecovery;state.autonomous=state.mode==='facilitator'&&!state.quiet;}
     state.status = 'recording'; state.health.connection = 'ok'; state.lastError = null;
   } else if (action === 'empty') {
     if (!['recording', 'paused'].includes(state.status)) return false;
     state.emptyPreviousStatus = state.status; state.status = 'empty_grace'; state.emptySince = now;
   } else if (action === 'returned') {
     if (state.status !== 'empty_grace') return false;
-    state.status = state.emptyPreviousStatus === 'paused' ? 'paused' : 'recording'; state.emptySince = null;
+    state.status = state.emptyPreviousStatus === 'paused'||details.forcePaused ? 'paused' : 'recording'; state.emptySince = null;
   } else if (action === 'finish') {
     if (!active && state.status !== 'finalize_failed') return false;
     state.status = 'finalizing'; state.endedAt ??= now; state.emptySince = null;

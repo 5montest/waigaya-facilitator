@@ -15,6 +15,7 @@ import { requestAllowed } from './network.js';
 
 import { MinutesGenerator, checkMinutes, minutesMarkdown, minutesStale } from './minutes.js';
 import { applyPublication, approveVersion, changeDestination, normalizePublications } from './publication.js';
+import { fixedPolicy as loadFixedPolicy,validatePolicy,policyMode } from './discord/fixed-policy.js';
 import { stateMessage } from './state-sync.js';
 import { activeStatuses, canSpeak, modes } from './meeting.js';
 
@@ -28,9 +29,10 @@ async function readBody(req) {
 }
 
 export function createApp({ store = new Store(), modelAnalyze = analyze, sttConnect = connectStt, ttsSynthesize = synthesize,
-  minutesGenerator = new MinutesGenerator(), serviceToken = loadServiceToken(),
+  minutesGenerator = new MinutesGenerator(), fixed = loadFixedPolicy(), serviceToken = loadServiceToken(),
   access = { hosts: ['127.0.0.1', 'localhost'], networks: ['127.0.0.0/8', '::1/128'] }, tls, caCertificate, httpsUrl = null } = {}) {
   const sessions = new Map(), minutesJobs = new Map();
+  if(fixed){fixed=validatePolicy(fixed);store.saveGuildSettings({...store.guildSettings(fixed.guildId),fixedPolicy:fixed});}
   const serviceAuthorized = req => {
     const supplied = req.headers.authorization?.replace(/^Bearer /, '');
     const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
@@ -41,8 +43,10 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
   for (const saved of store.list()) {
     normalizePublications(saved);
     if (!protectedSession(saved)) continue;
-    if (['recording', 'empty_grace', 'created'].includes(saved.status) || !saved.status) { saved.status = 'paused'; saved.endReason = 'server_restarted'; saved.gaps ??= []; saved.gaps.push({ kind: 'server_restarted', startedAt: saved.lastPersistedAt || null, endedAt: Date.now() }); }
+    if(saved.fixedOperation&&saved.status==='empty_grace'){saved.recoveryEmptyCheck=true;}
+    else if (['recording', 'empty_grace', 'created'].includes(saved.status) || !saved.status) { saved.recoveryEmptyCheck=Boolean(saved.fixedOperation);saved.status = 'paused'; saved.endReason = 'server_restarted'; saved.gaps ??= []; saved.gaps.push({ kind: 'server_restarted', startedAt: saved.lastPersistedAt || null, endedAt: Date.now() }); }
     else if (saved.status === 'finalizing') { saved.status = 'finalize_failed'; saved.minutesStatus = 'failed'; }
+    if(saved.fixedOperation&&saved.quietBeforeRecovery===undefined)saved.quietBeforeRecovery=saved.quiet;
     saved.autonomous = false; saved.quiet = true; store.save(saved, 'restart_requires_explicit_resume');
   }
   const certificateFingerprint = caCertificate ? new X509Certificate(caCertificate).fingerprint256 : null;
@@ -63,7 +67,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
   function publish(r,{volatile=false}={}) { for(const ws of r.clients){ws.stateCache??={};send(ws,stateMessage(r.c.state,ws.stateCache,{volatile}));} }
   function save(r, kind, payload = {}) {
     if (appClosing) return;
-    if (r.pending && ((!['reply', 'autonomous'].includes(r.pending.mode) && (r.c.state.revision !== r.pending.revision || r.c.state.voiceEpoch !== r.pending.voiceEpoch)) || r.c.state.request?.id !== r.pending.requestId || r.c.state.request?.status !== 'thinking')) {
+    if (r.pending && ((!['reply', 'autonomous','voice_request'].includes(r.pending.mode) && (r.c.state.revision !== r.pending.revision || r.c.state.voiceEpoch !== r.pending.voiceEpoch)) || r.c.state.request?.id !== r.pending.requestId || r.c.state.request?.status !== 'thinking')) {
       r.pending.abort.abort(); r.pending = null;
     }
     if (r.tts && r.c.state.outputEpoch !== r.ttsEpoch) {
@@ -106,12 +110,12 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
         const document = await minutesGenerator.generateDraft(snapshot, { signal: abort.signal, onUsage: usage => { r.c.state.usage.push({ ...usage, outcome: 'received', at: Date.now() }); save(r, 'minutes_usage'); } });
         if (appClosing) return;
         checkMinutes(document, snapshot);
-        const version = { version: ++r.c.state.minutesVersion, document, confirmedDecisions: structuredClone(snapshot.decisions), metadata: { topic:snapshot.topic,startedAt:snapshot.startedAt,endedAt:snapshot.endedAt,participantNames:[...new Set(snapshot.utterances.map(u=>u.speaker).filter(Boolean))] }, generatedAt: Date.now(), approvedAt: null, approvedBy: null,
+        const version = { version: ++r.c.state.minutesVersion, document, confirmedDecisions: structuredClone(snapshot.decisions), metadata: { topic:snapshot.topic,startedAt:snapshot.startedAt,endedAt:snapshot.endedAt,participantNames:[...new Set(snapshot.utterances.map(u=>u.speaker).filter(Boolean))] }, generatedAt: Date.now(), approvedAt: null, approvedBy: null,humanReviewedAt:null,humanReviewedBy:null,
           transcriptRefs: snapshot.utterances.filter(u => u.final && u.source !== 'ai').map(u => ({ utteranceId: u.id, revision: u.revision })),
           contextRevision: snapshot.revision, kind: summary ? 'summary' : 'minutes' };
         r.c.state.minutesHistory.push(version);
         r.c.state.minutesStatus = minutesStale(r.c.state, version) ? 'needs_review' : 'draft';
-        if (!summary) r.c.state.status = 'completed';
+        if (!summary) {r.c.state.status = 'completed';if(r.c.state.fixedOperation&&r.c.state.publicationPolicy==='auto_publish_ai_draft')r.c.state.completionJob={...(r.c.state.completionJob||{}),status:'pending',phase:'publication',nextAttemptAt:null};}
         r.c.state.lastError = null; save(r, 'minutes_ready', { version: version.version });
       } catch {
         if (appClosing) return;
@@ -144,6 +148,13 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
       if (url.pathname === '/api/config' && req.method === 'GET') {
         json(res, 200, { models: catalog.filter(m => m.provider === 'openai').map(m => ({ ...m, configured: Boolean(keyFor('openai')) })), defaultModel: 'gpt-6.1-sol', audio: { provider: 'openai', configured: Boolean(keyFor('openai')), sampleRate: 24000, sttModels, defaultSttModel, ttsModel, voice: process.env.WAIGAYA_OPENAI_VOICE || 'marin', speakerDiarization: false }, connection: { httpsUrl, certificateUrl: caCertificate ? '/lan-ca.crt' : null, certificateFingerprint }, mode: 'manual', qualityVerified: false }); return;
       }
+      const policyMatch=url.pathname.match(/^\/api\/guilds\/(\d{17,22})\/fixed-policy$/);
+      if(policyMatch){
+        if(req.method!=='POST')throw new Error('固定設定は登録操作から確認してください。');
+        if(!serviceAuthorized(req)){json(res,403,{error:'固定設定は認証済みBotから登録してください。'});return;}
+        const body=validatePolicy(await readBody(req));if(body.guildId!==policyMatch[1]||fixed&&JSON.stringify(body)!==JSON.stringify(fixed))throw new Error('サーバーとBotの固定設定が一致しません。');
+        store.saveGuildSettings({...store.guildSettings(body.guildId),fixedPolicy:body});json(res,200,body);return;
+      }
       const settingsMatch=url.pathname.match(/^\/api\/guilds\/(\d{17,22})\/settings$/);
       if(settingsMatch){
         if(!serviceAuthorized(req)){json(res,403,{error:'設定はDiscordの管理者操作から変更してください。'});return;}
@@ -151,22 +162,30 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
         if(req.method!=='POST')throw new Error('設定操作を確認してください。');
         const body=await readBody(req);
         if(body.channelId!==null&&!/^\d{17,22}$/.test(body.channelId||''))throw new Error('保存先を選んでください。');
+        if(store.guildSettings(settingsMatch[1]).fixedPolicy)throw new Error('保存先は導入時の固定設定で管理します。');
         json(res,200,store.saveGuildSettings({guildId:settingsMatch[1],defaultMinutesChannelId:body.channelId,updatedBy:body.actorId,updatedAt:Date.now()}));return;
       }
       if (url.pathname === '/api/sessions' && req.method === 'POST') {
         const body = await readBody(req);
         if (body.discord && !serviceAuthorized(req)) { json(res, 403, { error: 'Discord会議は認証済みBotから開始してください。' }); return; }
         const metadata = {...body.discord};
+        const policy=body.discord?store.guildSettings(metadata.guildId).fixedPolicy:null;
+        if(policy){
+          if(metadata.voiceChannelId!==policy.voiceChannelId||metadata.outputChannelId&&metadata.outputChannelId!==policy.minutesForumId)throw new Error('固定VC・固定フォーラム以外では会議を開始できません。');
+          if(!metadata.recordingNoticeSentAt||policy.autoPublish&&!metadata.autoPublicationNoticeAt)throw new Error('記録・自動公開の開始前通知が必要です。');
+          if(store.list().some(s=>s.guildId===policy.guildId&&activeStatuses.includes(s.status)))throw new Error('継続中の会議があります。statusから確認してください。');
+          Object.assign(metadata,{fixedOperation:true,fixedVoiceChannelId:policy.voiceChannelId,fixedMinutesForumId:policy.minutesForumId,outputChannelId:policy.minutesForumId,publicationPolicy:policy.autoPublish?'auto_publish_ai_draft':'human_review',autoFinishAfterMs:policy.emptyGraceMs,responsePolicy:policy.responsePolicy});
+        }else if(metadata.fixedOperation||metadata.publicationPolicy==='auto_publish_ai_draft')throw new Error('固定設定を登録するまで自動公開はできません。');
         if(body.discord&&metadata.outputChannelId===undefined)metadata.outputChannelId=store.guildSettings(metadata.guildId).defaultMinutesChannelId;
         if (body.discord && !['guildId', 'voiceChannelId', 'ownerId'].every(k => /^\d{17,22}$/.test(metadata[k] || ''))) throw new Error('Discord会議の識別情報が不正です。');
         const c = new Controller({ mode: 'minutes', ...metadata });
-        if (body.mode) c.configure({ mode: body.mode });
+        if (policy)c.configure({mode:policyMode(policy)});else if (body.mode) c.configure({ mode: body.mode });
         const r = { c, clients: new Set(), pending: null, tts: null, ttsEpoch: null, micOwner: null, heartbeatAt: 0 };
         sessions.set(c.state.id, r); save(r, 'created'); json(res, 201, c.snapshot()); return;
       }
       if (url.pathname === '/api/sessions' && req.method === 'GET') {
         if (!serviceAuthorized(req)) { json(res, 403, { error: '会議一覧はDiscordから確認してください。' }); return; }
-        json(res, 200, store.list().filter(s => s.guildId === url.searchParams.get('guildId')).map(s => ({ id: s.id,guildId:s.guildId, topic: s.topic, status: s.status, mode: s.mode, startedAt: s.startedAt, ownerId: s.ownerId, voiceChannelId: s.voiceChannelId, minutesStatus: s.minutesStatus, minutesVersion: s.minutesVersion })).sort((a,b) => (b.startedAt || 0) - (a.startedAt || 0))); return;
+        json(res, 200, store.list().filter(s => s.guildId === url.searchParams.get('guildId')).map(s => ({ id: s.id,guildId:s.guildId, topic: s.topic, status: s.status, mode: s.mode, startedAt: s.startedAt, ownerId: s.ownerId, voiceChannelId: s.voiceChannelId, minutesStatus: s.minutesStatus, minutesVersion: s.minutesVersion,fixedOperation:s.fixedOperation,emptySince:s.emptySince,recoveryEmptyCheck:s.recoveryEmptyCheck,completionJob:s.completionJob })).sort((a,b) => (b.startedAt || 0) - (a.startedAt || 0))); return;
       }
       const match = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})(?:\/(events|analyze|markdown|audit|finish|minutes|minutes.md|transcript.md|summary))?$/);
       if (!match) { json(res, 404, { error: '見つかりません。' }); return; }
@@ -184,10 +203,12 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
       if (['finish', 'summary'].includes(route)) {
         if (route === 'finish' && r.sttDrain) await drainBrowser(r);
         if (route === 'finish' && activeStatuses.includes(r.c.state.status)) r.c.lifecycle('finish', { reason: body.reason || 'manual' });
+        if(route==='finish'&&r.c.state.fixedOperation){r.c.state.completionJob??={status:'pending',phase:'generation',generationAttempts:0};if(body.deferGeneration){save(r,'finish_deferred');json(res,202,r.c.snapshot());return;}}
         const job = generateMinutes(r, { retry: Boolean(body.retry), summary: route === 'summary' });
         void job.catch(() => {}); json(res, 202, r.c.snapshot()); return;
       }
       if (route === 'minutes') {
+        if(body.action==='completion'){if(!r.c.state.fixedOperation||!['pending','completed','skipped_empty','failed','needs_reconciliation'].includes(body.job?.status))throw new Error('終了ジョブの操作が不正です。');r.c.state.completionJob={...r.c.state.completionJob,...body.job,updatedAt:Date.now()};save(r,'completion_job',body.job);json(res,200,r.c.snapshot());return;}
         if (body.action === 'retry') { void generateMinutes(r, { retry: true, summary: activeStatuses.includes(r.c.state.status) }).catch(() => {}); json(res, 202, r.c.snapshot()); return; }
         if(body.action==='destination'){changeDestination(r.c.state,body);save(r,'destination_changed',body);json(res,200,r.c.snapshot());return;}
         if(body.action?.startsWith('publication')){const before=structuredClone(r.c.state.publications);applyPublication(r.c.state,body);if(body.action==='publication_failure')r.c.state.health.discord_post='failed';else if(['publication','publication_link'].includes(body.action))r.c.state.health.discord_post='ok';try{save(r,body.action,{...body,approvedMarkdown:undefined});}catch(e){r.c.state.publications=before;const pending=before.find(p=>p.reservationId===body.reservationId);if(pending&&['publication','publication_link'].includes(body.action)){pending.status='needs_reconciliation';pending.errorCategory='result_storage_unknown';}throw e;}json(res,200,r.c.snapshot());return;}
@@ -195,11 +216,13 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
         if (!version || version.version !== body.version) throw new Error('議事録の版が変わりました。もう一度確認してください。');
         if (body.action === 'edit') {
           checkMinutes(body.document, r.c.state);
-          r.c.state.minutesHistory.push({ ...version, version: ++r.c.state.minutesVersion, document: body.document, editedAt: Date.now(), editedBy: body.actorId || 'operator', approvedAt: null, approvedBy: null, approvedMarkdown: null });
-          r.c.state.minutesStatus = 'draft';
+          r.c.state.minutesHistory.push({ ...version, version: ++r.c.state.minutesVersion, document: body.document, editedAt: Date.now(), editedBy: body.actorId || 'operator', approvedAt: null, approvedBy: null,humanReviewedAt:null,humanReviewedBy:null, approvedMarkdown: null });
+          r.c.state.minutesStatus = 'draft';if(r.c.state.fixedOperation)r.c.state.completionJob={status:'pending',phase:'publication'};
         } else if (body.action === 'approve') {
           if (minutesStale(r.c.state, version)) throw new Error('原発言が変わっています。再生成・確認してください。');
-          approveVersion(r.c.state,version,body.actorId||'operator');
+          let reviewed=version;
+          if(r.c.state.fixedOperation&&r.c.state.publications.some(p=>p.version===version.version&&p.status==='published')&&!version.approvedAt){reviewed={...structuredClone(version),version:++r.c.state.minutesVersion};r.c.state.minutesHistory.push(reviewed);}
+          approveVersion(r.c.state,reviewed,body.actorId||'operator');if(r.c.state.fixedOperation)r.c.state.completionJob={status:'pending',phase:'publication'};
         } else throw new Error('議事録の操作が不正です。');
         save(r, 'minutes_' + body.action, { actorId: body.actorId, version: body.version }); json(res, 200, r.c.snapshot()); return;
       }
@@ -209,7 +232,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
             const u = body.utterance;
             if (r.c.state.guildId && u?.source === 'discord' && !(r.c.state.status === 'recording' || (r.c.state.status === 'empty_grace' && u.startMs <= r.c.state.emptySince))) throw new Error('記録を受け付けていない会議です。');
             r.c.upsert(u);
-            if (r.c.state.minutesHistory.some(v => minutesStale(r.c.state, v))) r.c.state.minutesStatus = 'needs_review';
+            if (r.c.state.minutesHistory.some(v => minutesStale(r.c.state, v))) {r.c.state.minutesStatus = 'needs_review';if(r.c.state.fixedOperation&&r.c.state.status==='completed')r.c.state.completionJob={status:'pending',phase:'regeneration',generationAttempts:0};}
             break;
           }
           case 'lifecycle': if(body.action === 'pause' && r.sttDrain) await drainBrowser(r); r.c.lifecycle(body.action, body); break;
@@ -238,12 +261,13 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
       }
       if (route === 'analyze') {
         if (body.provider !== 'openai') throw new Error('MVPではOpenAIのモデルを選んでください。');
-        if (body.mode !== undefined && !['live', 'reply', 'autonomous'].includes(body.mode)) throw new Error('返答のモードが不正です。');
+        if (body.mode !== undefined && !['live', 'reply', 'autonomous','voice_request'].includes(body.mode)) throw new Error('返答のモードが不正です。');
         if (body.trigger !== undefined && body.trigger !== 'auto') throw new Error('依頼の種類が不正です。');
         if (body.trigger === 'auto' && (!canSpeak(r.c.state) || r.c.state.mode !== 'facilitator' || !r.c.state.autonomous || body.mode !== 'autonomous')) throw new Error('自律発言は停止中です。');
         if (!r.c.state.utterances.some(u => u.final)) throw new Error('確定した発言を追加してください。');
         r.pending?.abort.abort();
-        const ticket = r.c.beginRequest({ mode: body.mode || 'live' });
+        if(body.mode==='voice_request'){const q=body.voiceRequest,u=r.c.state.utterances.find(u=>u.id===q?.utteranceId);if(!r.c.state.fixedOperation||!canSpeak(r.c.state)||!r.c.state.inputHealthy||['stt','storage','connection'].some(k=>r.c.state.health?.[k]==='failed')||!u?.final||u.source!=='discord'||u.revision!==q.revision||u.userId!==q.userId||typeof q.question!=='string'||q.question.length>12000)throw new Error('現在の確定発言からの呼びかけが必要です。');}
+        const ticket = r.c.beginRequest({ mode: body.mode || 'live',...(body.mode==='voice_request'?{voiceRequest:body.voiceRequest}:{}) });
         const pending = { ...ticket, abort: new AbortController() }; r.pending = pending;
         save(r, 'analysis_requested', { provider: body.provider, model: body.model, mode: ticket.mode, trigger: body.trigger || 'manual' });
         // モデル処理中も音声入力・停止操作を受け付ける。
@@ -341,7 +365,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
               if (r.c.state.outputEpoch === permit.epoch) send(ws, { type: 'tts_done', epoch: permit.epoch });
               r.tts = null; save(r, 'tts_generated', { epoch: permit.epoch, bytes });
             },
-            onError: e => { if (r.c.state.outputEpoch === permit.epoch) { r.c.stop('tts_failed'); r.c.state.error = e.message; save(r, 'tts_failed'); } },
+            onError: e => { if (r.c.state.outputEpoch === permit.epoch) { r.c.stop('tts_failed'); r.c.state.health.tts='failed';r.c.state.error = e instanceof UserError?e.message:'AI音声の生成に失敗しました。文字起こしは継続します。'; save(r, 'tts_failed'); } },
           });
         } else if (event.type === 'playback' && r.micOwner === ws) {
           if (r.c.played(event.epoch, Number(event.heardMs) || 0)&&Date.now()-(r.progressSavedAt||0)>=1000){r.progressSavedAt=Date.now();save(r, 'playback_progress', { epoch:event.epoch,heardMs:event.heardMs });}

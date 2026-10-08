@@ -38,7 +38,7 @@ test('無音パケットと小さなノイズは発話扱いせず、60msの声�
 test('Discord設定はトークンをファイルから読み、外部サーバーURLと複数行の秘密値を拒否する',()=>{
   const root=mkdtempSync(join(tmpdir(),'wg-discord-'));const env={DISCORD_APPLICATION_ID:'123456789012345678',DISCORD_GUILD_ID:'223456789012345678',DISCORD_BOT_TOKEN_FILE:'token.txt'};
   try{
-    writeFileSync(join(root,'token.txt'),'a'.repeat(60)+'\n');const config=discordConfig({env,workspace:root});assert.equal(config.token.length,60);
+    writeFileSync(join(root,'token.txt'),'a'.repeat(60)+'\n');const config=discordConfig({env:{...env,WAIGAYA_DISCORD_VOICE_CHANNEL_ID:'223456789012345678',WAIGAYA_DISCORD_MINUTES_FORUM_ID:'323456789012345678'},workspace:root});assert.equal(config.token.length,60);
     assert.equal(new URL(inviteUrl(config)).searchParams.get('guild_id'),env.DISCORD_GUILD_ID);
     assert.throws(()=>discordConfig({env:{...env,WAIGAYA_DISCORD_SERVER:'http://elsewhere.example'},workspace:root}));
     writeFileSync(join(root,'token.txt'),'a'.repeat(60)+'\n'+'b'.repeat(60));assert.throws(()=>discordConfig({env,workspace:root}));
