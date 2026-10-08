@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import { initialMeeting, transition, modes, canSpeak, isMeaningful } from './meeting.js';
 
 // 音声状態と意味内容の版を分ける。ネットワークを待たずに同期的に判定する。
 export class Controller {
   constructor(saved = {}, clock = Date.now) {
     this.clock = clock;
     this.state = {
-      id: randomUUID(), topic: 'ワイガヤ', phase: 'diverge', revision: 0,
+      ...initialMeeting(clock), id: randomUUID(), topic: 'ワイガヤ', phase: 'diverge', revision: 0,
       utterances: [], decisions: [], aiTurns: [], usage: [], candidate: null,
       request: null, reply: null, autonomous: false, speaking: false, inputHealthy: false, lastVoiceAt: clock(),
       outputEpoch: 0, voiceEpoch: 0, playback: null, error: null, ...saved,
@@ -14,23 +15,35 @@ export class Controller {
   snapshot() { return structuredClone(this.state); }
   invalidate({ preserveReply = false } = {}) {
     this.state.candidate = null;
-    if (!(preserveReply && this.state.request?.mode === 'reply')) this.stop('context_changed');
-    if (!(preserveReply && this.state.request?.mode === 'reply')) {
+    if (!(preserveReply && ['reply', 'autonomous'].includes(this.state.request?.mode))) this.stop('context_changed');
+    if (!(preserveReply && ['reply', 'autonomous'].includes(this.state.request?.mode))) {
       this.state.reply = null;
       if (this.state.request) this.state.request.status = 'needs_refresh';
     }
     this.state.revision++;
+    if (preserveReply && this.state.request?.mode === 'autonomous') { this.state.request.revision = this.state.revision; if (this.state.reply) this.state.reply.snapshotRevision = this.state.revision; }
   }
-  configure({ topic, phase, autonomous }) {
+  configure({ topic, phase, autonomous, mode, quiet }) {
     if (topic !== undefined && (typeof topic !== 'string' || !topic.trim() || topic.length > 200)) throw new Error('議題を入力してください。');
     if (phase !== undefined && !['diverge', 'organize', 'decide'].includes(phase)) throw new Error('議論の段階が不正です。');
     if (autonomous !== undefined && typeof autonomous !== 'boolean') throw new Error('自律発言の設定が不正です。');
+    if (mode !== undefined && !Object.hasOwn(modes, mode)) throw new Error('会議モードが不正です。');
+    if (quiet !== undefined && typeof quiet !== 'boolean') throw new Error('音声停止の設定が不正です。');
+    if (mode !== undefined || quiet !== undefined) {
+      this.invalidate();
+      if (mode !== undefined) { this.state.mode = mode; this.state.quiet = false; this.state.autonomous = mode === 'facilitator'; }
+      if (quiet !== undefined) { this.state.quiet = quiet; if (quiet) this.state.autonomous = false; }
+    }
     if ((topic !== undefined && topic !== this.state.topic) || (phase !== undefined && phase !== this.state.phase) || (autonomous !== undefined && autonomous !== this.state.autonomous)) {
       this.invalidate();
       if (topic !== undefined) this.state.topic = topic;
       if (phase !== undefined) this.state.phase = phase;
-      if (autonomous !== undefined) this.state.autonomous = autonomous;
+      if (autonomous !== undefined) this.state.autonomous = autonomous && this.state.mode === 'facilitator';
     }
+  }
+  lifecycle(action, details = {}) {
+    if (transition(this.state, action, this.clock(), details)) { this.invalidate(); this.healthy(false); return true; }
+    return false;
   }
   upsert({ id = randomUUID(), text, speaker = null, final = true, startMs, endMs, source = 'manual' }) {
     if (typeof text !== 'string' || !text.trim() || text.length > 12000) throw new Error('発言は1〜12,000文字で入力してください。');
@@ -43,7 +56,8 @@ export class Controller {
     if (old && old.text === text && old.final === final && old.speaker === speaker && old.startMs === startMs && old.endMs === endMs) return old;
     // 依頼への返答は依頼時点の確定発言を使う。追加・未確定発言の更新で検討を捨てない。
     // 確定発言の訂正は、回答の前提が変わるので取り消す。
-    this.invalidate({ preserveReply: !old || !old.final });
+    const preserveReply = (!old || !old.final) && (this.state.request?.mode !== 'autonomous' || !final || !isMeaningful(text));
+    this.invalidate({ preserveReply });
     const next = { id, text, speaker, final, startMs, endMs, source, revision: (old?.revision ?? 0) + 1, receivedAt: old?.receivedAt ?? this.clock() };
     if (old) Object.assign(old, next); else this.state.utterances.push(next);
     this.state.utterances.sort((a, b) => (a.startMs ?? a.receivedAt) - (b.startMs ?? b.receivedAt));
@@ -56,7 +70,7 @@ export class Controller {
       this.state.lastVoiceAt = this.clock();
       this.state.candidate = null;
       this.stop('human_speaking');
-      if (this.state.request && this.state.request.mode !== 'reply') this.state.request.status = 'needs_refresh';
+      if (this.state.request && !['reply', 'autonomous'].includes(this.state.request.mode)) this.state.request.status = 'needs_refresh';
     } else this.state.lastVoiceAt = this.clock();
   }
   healthy(value) {
@@ -74,11 +88,12 @@ export class Controller {
   accept(result, ticket) {
     const s = this.state;
     if (s.request?.id !== ticket.requestId || s.request.status !== 'thinking') return false;
-    if (ticket.mode !== 'reply' && (s.revision !== ticket.revision || s.voiceEpoch !== ticket.voiceEpoch)) return false;
-    if (ticket.mode === 'reply') {
+    if (!['reply', 'autonomous'].includes(ticket.mode) && (s.revision !== ticket.revision || s.voiceEpoch !== ticket.voiceEpoch)) return false;
+    if (ticket.mode === 'autonomous' && s.request.revision !== s.revision) return false;
+    if (['reply', 'autonomous'].includes(ticket.mode)) {
       if (result.action !== 'hold' && !this.evidenceValid(result.evidence)) return false;
       s.request.status = 'ready';
-      s.reply = { ...structuredClone(result), requestId: ticket.requestId, snapshotRevision: ticket.revision, expiresAt: this.clock() + 60000 };
+      s.reply = { ...structuredClone(result), requestId: ticket.requestId, snapshotRevision: s.revision, createdAt: this.clock(), topic: s.topic, expiresAt: this.clock() + (ticket.mode === 'autonomous' ? 15000 : 60000) };
       return true;
     }
     s.request.status = 'ready';
@@ -88,7 +103,7 @@ export class Controller {
     return true;
   }
   evidenceValid(refs) {
-    return Array.isArray(refs) && refs.length > 0 && refs.every(r => this.state.utterances.some(u => u.id === r.utteranceId && u.revision === r.revision && u.final));
+    return Array.isArray(refs) && refs.length > 0 && refs.every(r => this.state.utterances.some(u => u.id === r.utteranceId && u.revision === r.revision && u.final && u.source !== 'ai'));
   }
   expire() {
     if (this.state.reply && this.clock() >= this.state.reply.expiresAt) {
@@ -104,6 +119,7 @@ export class Controller {
     return false;
   }
   permit(candidateId) {
+    if (!canSpeak(this.state)) throw new Error('このモード・状態ではAIは音声発言しません。');
     this.expire();
     const s = this.state, c = s.candidate;
     if (!c || c.id !== candidateId || c.contextRevision !== s.revision || !this.evidenceValid(c.evidence)) throw new Error('候補が更新・失効しました。再検討してください。');
@@ -117,6 +133,7 @@ export class Controller {
     this.expire();
     const s = this.state, reply = s.reply;
     if (!reply || reply.requestId !== requestId || s.request?.id !== requestId || s.request.status !== 'ready' || reply.action === 'hold' || !this.evidenceValid(reply.evidence)) throw new Error('返答が取り消し・更新されました。もう一度 /waigaya ask を使ってください。');
+    if (s.request.mode === 'autonomous' && reply.snapshotRevision !== s.revision) throw new Error('自律候補の文脈が古くなりました。');
     if (!s.inputHealthy || s.speaking || this.clock() - s.lastVoiceAt < 500) throw new Error('人の発話が終わるのを待っています。');
     s.candidate = { ...reply, id: randomUUID(), contextRevision: s.revision, expiresAt: this.clock() + 15000 };
     const permit = this.permit(s.candidate.id);
@@ -136,7 +153,7 @@ export class Controller {
     if (epoch !== null && p?.epoch !== epoch) return;
     if (['manual', 'new_request', 'discarded', 'input_lost', 'server_restarted'].includes(reason)) {
       this.state.reply = null;
-      if (this.state.request?.mode === 'reply') this.state.request.status = 'dismissed';
+      if (['reply', 'autonomous'].includes(this.state.request?.mode)) this.state.request.status = 'dismissed';
     }
     this.state.outputEpoch++;
     if (p) {
