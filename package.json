@@ -12,7 +12,9 @@
     "compare": "node --env-file-if-exists=.env.local scripts/compare.js",
     "smoke:openai": "node --env-file-if-exists=.env.local scripts/smoke-openai.js",
     "discord": "node --env-file-if-exists=.env.local --env-file-if-exists=.env.discord src/discord/bot.js",
-    "discord:setup": "node --env-file-if-exists=.env.local --env-file-if-exists=.env.discord scripts/discord-setup.js"
+    "discord:setup": "node --env-file-if-exists=.env.local --env-file-if-exists=.env.discord scripts/discord-setup.js",
+    "discord:auth": "node scripts/init-discord-service.js",
+    "discord:migrate": "node scripts/migrate-discord-meeting.js"
   },
   "dependencies": {
     "@discordjs/opus": "^0.10.0",

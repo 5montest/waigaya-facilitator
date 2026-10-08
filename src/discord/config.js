@@ -1,3 +1,4 @@
+import { loadServiceToken } from '../credentials.js';
 import { readFileSync, lstatSync, realpathSync } from 'node:fs';
 import { resolve, relative, isAbsolute } from 'node:path';
 
@@ -17,12 +18,12 @@ export function discordConfig({env=process.env,workspace=process.cwd(),requireTo
   if(requireToken&&!token)throw new Error('DISCORD_BOT_TOKEN_FILE又はDISCORD_BOT_TOKENを設定してください。');
   const server=new URL(env.WAIGAYA_DISCORD_SERVER || `http://127.0.0.1:${env.WAIGAYA_PORT || 8765}`);
   if(server.protocol!=='http:'||!['127.0.0.1','localhost'].includes(server.hostname)||server.username||server.password||server.pathname!=='/'||server.search||server.hash)throw new Error('Discord Botの接続先は同じ端末のHTTPサーバーにしてください。');
-  return {applicationId,guildId,token,server:server.origin};
+  return {applicationId,guildId,token,server:server.origin,serviceToken:loadServiceToken({env,workspace}),controlRoleIds:(env.WAIGAYA_DISCORD_CONTROL_ROLE_IDS||'').split(',').filter(Boolean)};
 }
 
 export function inviteUrl({applicationId,guildId}) {
   // ViewChannel / SendMessages / Connect / Speak。管理者権限は要求しない。
-  const permissions=(1024n|2048n|1048576n|2097152n).toString();
+  const permissions=(1024n|2048n|32768n|1048576n|2097152n).toString();
   const url=new URL('https://discord.com/oauth2/authorize');
   url.search=new URLSearchParams({client_id:applicationId,scope:'bot applications.commands',permissions,guild_id:guildId,disable_guild_select:'true'}).toString();
   return url.href;

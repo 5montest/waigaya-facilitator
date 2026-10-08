@@ -8,10 +8,10 @@ export class AutonomousFacilitator {
     this.considered = new Map(); this.nextAt = 0; this.busy = false; this.closed = false;
     this.abort = new AbortController();
   }
-  start() { this.timer = setInterval(() => void this.tick(), 250); this.timer.unref(); }
+  start() { this.timer = setInterval(() => void this.tick(), 250); this.timer.unref?.(); }
   async tick() {
     const state = this.bridge.state, now = this.clock();
-    if (this.closed || this.busy || !state?.autonomous || !state.inputHealthy || state.speaking || state.playback || state.reply || state.request?.status === 'thinking' || !this.available() || now < this.nextAt || now - state.lastVoiceAt < this.quietMs) return false;
+    if (this.closed || this.busy || !state?.autonomous || state.mode === 'minutes' || state.quiet || (state.guildId && state.status !== 'recording') || !state.inputHealthy || state.speaking || state.playback || state.reply || state.request?.status === 'thinking' || !this.available() || now < this.nextAt || now - state.lastVoiceAt < this.quietMs) return false;
     const changed = state.utterances.filter(u => u.final && this.considered.get(u.id) !== u.revision);
     const meaningful = changed.filter(u => { const text = normalized(u.text); return text.length >= 5 && !acknowledgement.test(text); });
     if (!meaningful.length || (meaningful.length < this.minTurns && meaningful.reduce((sum, u) => sum + normalized(u.text).length, 0) < this.minChars)) return false;
