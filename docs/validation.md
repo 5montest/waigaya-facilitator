@@ -15,7 +15,7 @@ npm test
 npm run bench:storage
 ```
 
-GitHub Actionsはpull_requestと作業ブランチpushでNode 24.17 / Ubuntu 24.04 / Chromiumを用いる。Secrets、OpenAIキー、Discordトークンは不要。CI実行結果はPRのChecksから確認できる。今回の改修テストでは実OpenAI APIと実Discord投稿を呼び出していない。
+GitHub Actionsはpull_requestと作業ブランチpushでNode 24.17 / Ubuntu 24.04 / Chromiumを用いる。Secrets、OpenAIキー、Discordトークンは不要。`483cceb` の[pull_request CI](https://github.com/5montest/waigaya-facilitator/actions/runs/37824012931)は成功した（約54秒、npm ci・Chromium導入・npm test・diff確認）。最新コミットの結果は[PR #1のChecks](https://github.com/5montest/waigaya-facilitator/pull/1/checks)から確認できる。今回の改修テストでは実OpenAI APIと実Discord投稿を呼び出していない。
 
 ## 保存・配信の負荷測定
 
