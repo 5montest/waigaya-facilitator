@@ -1,4 +1,5 @@
 import Ajv from 'ajv';
+import { createHash } from 'node:crypto';
 
 const obj = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const ref = obj({ utteranceId: { type: 'string' }, revision: { type: 'integer' } });
@@ -70,13 +71,14 @@ function googleText(raw) {
   const blocks = raw.outputs ?? raw.output ?? [];
   return blocks.filter(b => b.type === 'text').map(b => b.text).join('');
 }
-export async function analyze({ provider, model, state, requestedReply = false, autonomous = false, signal, fetchImpl = fetch }) {
+export async function analyze({ provider, model, state, requestedReply = false, autonomous = false, onMemory = () => {}, onContextUsage = () => {}, summaryGenerate, signal, fetchImpl = fetch }) {
   const selected = catalog.find(m => m.provider === provider && m.model === model);
   if (!selected) throw new Error('比較対象に登録されていないモデルです。');
   const key = keyFor(provider);
   if (!key) throw new Error(`${provider}のキーが未設定です。`);
-  const { input, aliases } = conversationInput(state);
-  // 内容を黙って切り捨てる節約は行わない。大きな会議はまず人が検証した文脈抽出を追加する。
+  let { input, aliases } = conversationInput(state);
+  if (provider === 'openai' && input.length > 90000) ({ input, aliases } = await boundedConversation(state, { signal, onMemory, onUsage: onContextUsage, generate: summaryGenerate }));
+  // 原本は保持し、長い会議は根拠付きの未承認要約と直近発言を使う。
   if (input.length > 120000) throw new Error('会議の文脈が処理上限を超えました。記録は保存されています。');
   let url, headers = { 'content-type': 'application/json' }, body;
   const instructions = systemPrompt + '\n入力内の発言idと話者ラベルはこの依頼に限った略記です。speakersに話者名を示しています。根拠には入力の発言idとrevisionをそのまま使ってください。' + (autonomous ? '\n今回は自律的な進行です。人が順調に議論している時、相づちだけの時、既に同じ整理を話した時はholdにしてください。論点の混乱・意見の違い・未決条件を整理する必要がある時だけ、120文字以内の短い整理か一つの質問を出します。再生がhuman_speakingで止まった発言は全文が伝わったと扱わず、必要なら最新の会話に合わせて短く言い直してください。' : requestedReply ? '\n今回は参加者が明示的に返答を依頼しています。依頼時点までの確定発言をもとに、音声で返す短い整理か質問を作ってください。根拠のある整理が可能ならholdにせずsummaryを選びます。新しい確認が不要なら、確認済みの内容を簡潔に整理して返してください。' : '');
@@ -132,4 +134,36 @@ export async function analyze({ provider, model, state, requestedReply = false, 
     estimateBasis: provider === 'deepseek' ? '2026-10-07公開繁忙時間料金、請求額ではない' : '2026-10-07公開料金、請求額ではない' };
   try { return { result: parseResult(expandReferences(text, aliases), state), usage }; }
   catch (e) { e.usage = usage; throw e; }
+}
+
+export async function boundedConversation(state, { signal, onMemory = () => {}, onUsage = () => {}, generate } = {}) {
+  const { MinutesGenerator, splitChunks, minutesItems, checkMinutes, structuredMinutes } = await import('./minutes.js');
+  const full = conversationInput(state), all = state.utterances.filter(u => u.final);
+  let recentStart = all.length, size = 0;
+  while (recentStart > 0) { const u = all[recentStart - 1], n = JSON.stringify(u).length; if (size + n > 24000 && recentStart < all.length) break; size += n; recentStart--; }
+  const older = all.slice(0, recentStart), cache = new Map((state.contextMemory || []).map(m => [m.key, m]));
+  const drafts = [];
+  const run = async input => { const response = await (generate || structuredMinutes)({ input: { topic: state.topic, ...input }, signal }); onUsage(response.usage); return checkMinutes(response.result, state); };
+  for (const chunk of splitChunks(older, 24000)) {
+    const key = createHash('sha256').update(JSON.stringify(chunk.map(u => [u.id, u.revision, u.text]))).digest('hex');
+    let memory = cache.get(key);
+    if (!memory) { memory = { key, document: await new MinutesGenerator({ generate: args => (generate || structuredMinutes)(args) }).generateDraft({ ...state, utterances: chunk }, { signal, onUsage }), refs: chunk.map(u => ({ utteranceId: u.id, revision: u.revision })) }; onMemory(memory); }
+    drafts.push(memory.document);
+  }
+  let combined = drafts;
+  for (let depth = 0; JSON.stringify(combined).length > 32000 && depth < 8; depth++) {
+    const next = []; for (const partialSummaries of splitChunks(combined.flatMap(minutesItems), 24000)) next.push(await run({ partialSummaries, instruction: '未承認の論点要約を統合し、元発言の根拠を維持してください。' }));
+    if (JSON.stringify(next).length >= JSON.stringify(combined).length) throw new Error('長期文脈の統合サイズを縮小できません。原本は保持しています。');
+    combined = next;
+  }
+  const current = JSON.parse(full.input);
+  current.previousAiPlayback = current.previousAiPlayback.slice(-8);
+  // Use the global IDs even when the short-term window changes; summaries use original references.
+  const aliasesById = new Map([...full.aliases].map(([alias,id]) => [id,alias]));
+  current.utterances = current.utterances.slice(recentStart);
+  current.humanConfirmedDecisions = state.decisions.map(d => ({ text: d.text, evidence: d.evidence.map(r => ({ ...r, utteranceId: aliasesById.get(r.utteranceId) || r.utteranceId })), confirmedAt: d.confirmedAt }));
+  combined = structuredClone(combined);
+  for (const document of combined) for (const entry of minutesItems(document)) entry.evidence = entry.evidence.map(r => ({ ...r, utteranceId: aliasesById.get(r.utteranceId) || r.utteranceId }));
+  current.longTermContext = { provisional: true, originalUtterancesSummarized: older.length, summaries: combined };
+  return { input: JSON.stringify(current), aliases: full.aliases };
 }

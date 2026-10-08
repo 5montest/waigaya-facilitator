@@ -15,3 +15,14 @@ export function loadOpenAIKey({ workspace = process.cwd(), env = process.env } =
   env.OPENAI_API_KEY = values[0];
   return { configured: true, source: 'file' };
 }
+
+// Separate local Bot/server credential; never sent to Discord or the browser.
+export function loadServiceToken({ env = process.env, workspace = process.cwd() } = {}) {
+  if (!env.WAIGAYA_DISCORD_SERVICE_TOKEN_FILE) return null;
+  const root = realpathSync(workspace), target = resolve(root, env.WAIGAYA_DISCORD_SERVICE_TOKEN_FILE);
+  const local = relative(root, target), stat = lstatSync(target);
+  if (local.startsWith('..') || isAbsolute(local) || !stat.isFile() || stat.isSymbolicLink() || realpathSync(target) !== target || stat.size > 4096) throw new Error('Bot・サーバー間の認証ファイルを安全に読めません。');
+  const token = readFileSync(target, 'utf8').trim();
+  if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Bot・サーバー間の認証ファイルを設定してください。');
+  return token;
+}
