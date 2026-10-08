@@ -4,13 +4,13 @@
 
 | 資料 | 内容 | HTML版 |
 |---|---|---|
-| [改善実装の差分](improvement-report.md) | P0・P1の追加内容、互換性、未対応要件 | — |
-| [実通話の受け入れチェック](manual-acceptance.md) | 更新・3モード・退出・訂正・共有・障害の手動確認 | — |
+| [改善実装の差分](improvement-report.md) | PR #1のフォーラム・照合・負荷対策、互換性、制約 | — |
+| [実通話の受け入れチェック](manual-acceptance.md) | 更新・3モード・フォーラム投稿と版更新・照合復旧の手動確認 | — |
 | [全体設計](ai-waigaya-design.md) | 継続的な会話状態、発言制御、段階的な実装方針 | [HTML](ai-waigaya-design.html) |
 | [デバイス選定](ai-waigaya-devices.md) | PC・スマホ・Jetsonと処理の配置 | [HTML](ai-waigaya-devices.html) |
 | [モデル選定](ai-waigaya-models.md) | 他社も含む品質・費用の比較とOpenAIのみのMVP | [HTML](ai-waigaya-models.html) |
 | [LAN設定](lan-setup.md) | 現在のIP・HTTPS・キー設定 | — |
-| [検証記録の要約](validation.md) | 接続・比較・実通話で確認できた範囲 | — |
+| [検証記録の要約](validation.md) | 121件の自動テスト、保存・配信ベンチマーク、過去の接続確認 | — |
 
 全体設計・選定資料は2026年10月7〜8日の検討資料で、未実装の構想も含む。現行Discord版の仕様と異なる場合は現行仕様を参照する。モデルの料金・提供状況は資料作成時点の情報である。
 
