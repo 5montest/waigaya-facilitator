@@ -1,14 +1,16 @@
 import { UserError as Error, UserError } from '../errors.js';
+import { applyStatePatch } from '../state-sync.js';
 import { EventEmitter } from 'node:events';
 import { once } from 'node:events';
 import WebSocket from 'ws';
 
 export class MeetingBridge extends EventEmitter {
   constructor(base,{fetchImpl=fetch,serviceToken=null}={}){super();this.base=base;this.fetch=fetchImpl;this.serviceToken=serviceToken;this.state=null;this.queue=Promise.resolve();this.closing=false;}
-  async api(path,body){
-    const response=await this.fetch(this.base+path,{headers:{origin:this.base,'content-type':'application/json',...(this.serviceToken?{authorization:`Bearer ${this.serviceToken}`}:{})},method:body===undefined?'GET':'POST',...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(10000)});
+  async api(path,body,{minimal=false}={}){
+    const response=await this.fetch(this.base+path,{headers:{origin:this.base,'content-type':'application/json',...(minimal?{prefer:'return=minimal'}:{}),...(this.serviceToken?{authorization:`Bearer ${this.serviceToken}`}:{})},method:body===undefined?'GET':'POST',...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(10000)});
     const data=await response.json();if(!response.ok)throw new Error(data.error||'会議サーバーに接続できません。');
-    if(data?.id && this.state && data.id===this.state.id && (data.sequence??0)>=(this.state.sequence??0)){this.state=data;this.emit('state',data);}return data;
+    if(data?.ack&&this.ws?.readyState===WebSocket.OPEN)await this.waitFor(s=>(s.sequence??0)>=data.sequence,10000);
+    if(data?.id && !data.ack && this.state && data.id===this.state.id && (data.sequence??0)>=(this.state.sequence??0)){this.state=data;this.emit('state',data);}return data;
   }
   get path(){return `/api/sessions/${this.state.id}`;}
   async open(topic,{sessionId,mode='minutes',discord}={}){
@@ -27,7 +29,7 @@ export class MeetingBridge extends EventEmitter {
     this.ws.on('error',()=>this.emit('failure','会議サーバーとの音声接続が切れました。'));
     this.ws.on('close',()=>{clearInterval(this.heartbeat);if(!this.closing)this.emit('failure','会議サーバーとの音声接続が切れました。');});
     this.ws.on('message',raw=>{
-      try{const event=JSON.parse(raw);if(event.type==='state'){if((event.state.sequence??0)>=(this.state.sequence??0))this.state=event.state;this.emit('state',this.state);}else if(event.type==='error')this.emit('failure',event.error);else if(event.type==='action_error')this.emit('action_error',event);else this.emit('audio',event);}
+      try{const event=JSON.parse(raw);if(event.type==='state'){if((event.state.sequence??0)>=(this.state.sequence??0))this.state=event.state;this.emit('state',this.state);}else if(event.type==='state_patch'){try{this.state=applyStatePatch(this.state,event);this.emit('state',this.state);}catch{this.send({type:'resync'});}}else if(event.type==='error')this.emit('failure',event.error);else if(event.type==='action_error')this.emit('action_error',event);else this.emit('audio',event);}
       catch{this.emit('failure','会議サーバーの応答を処理できません。');}
     });
     await Promise.race([once(this.ws,'open'),new Promise((_,reject)=>{const t=setTimeout(()=>reject(new Error('会議サーバーへの接続がタイムアウトしました。')),10000);t.unref();})]);
@@ -47,7 +49,7 @@ export class MeetingBridge extends EventEmitter {
     });
   }
   enqueue(event){
-    const work=this.queue.then(()=>this.api(this.path+'/events',event));
+    const work=this.queue.then(()=>this.api(this.path+'/events',event,{minimal:true}));
     this.queue=work.catch(()=>{});work.catch(()=>this.emit('failure','文字起こし・使用量を会議へ保存できません。'));return work;
   }
   async ask({automatic=false,signal}={}){

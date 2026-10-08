@@ -98,7 +98,7 @@ export function minutesMarkdown(state, version = state.minutesHistory?.at(-1)) {
   const clean = s => String(s).replace(/[\r\n]/g, ' ');
   const stale = minutesStale(state, version);
   const refs = list => list.map(r => `${r.utteranceId}@${r.revision}`).join(', ');
-  const lines = [`# 議事録：${clean(metadata.topic)}`, '', `- 会議ID：${state.id}`, `- 日時：${metadata.startedAt ? new Date(metadata.startedAt).toISOString() : '不明'}〜${metadata.endedAt ? new Date(metadata.endedAt).toISOString() : '進行中'}`,
+  const lines = [`# ${version.kind==='summary'?'途中要約（正式議事録ではありません）':'議事録'}：${clean(metadata.topic)}`, '', `- 会議ID：${state.id}`, `- 日時：${metadata.startedAt ? new Date(metadata.startedAt).toISOString() : '不明'}〜${metadata.endedAt ? new Date(metadata.endedAt).toISOString() : '進行中'}`,
     `- 状態：${state.status}`, `- 議事録：版${version.version} ${stale ? '要再確認' : version.approvedAt ? '操作担当者が確認済み' : 'AI下書き（未承認）'}`,
     `- 参加者（記録で確認）：${(metadata.participantNames || [...new Set(state.utterances.map(u => u.speaker).filter(Boolean))]).map(clean).join('、') || '不明'}`, ''];
   const section = (title, entries, format = entry => clean(entry.text)) => {

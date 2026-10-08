@@ -23,7 +23,7 @@ export function discordConfig({env=process.env,workspace=process.cwd(),requireTo
 
 export function inviteUrl({applicationId,guildId}) {
   // ViewChannel / SendMessages / Connect / Speak。管理者権限は要求しない。
-  const permissions=(1024n|2048n|32768n|1048576n|2097152n).toString();
+  const permissions=(1024n|2048n|32768n|65536n|34359738368n|274877906944n|1048576n|2097152n).toString();
   const url=new URL('https://discord.com/oauth2/authorize');
   url.search=new URLSearchParams({client_id:applicationId,scope:'bot applications.commands',permissions,guild_id:guildId,disable_guild_select:'true'}).toString();
   return url.href;

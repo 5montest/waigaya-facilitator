@@ -1,3 +1,4 @@
+import { applyStatePatch } from '/state-sync.js';
 import { AutonomousFacilitator } from '/autonomy.js';
 const $ = id => document.getElementById(id);
 let state, config, ws, editingId = null, mic = null, starting = false, transcriptKey = null;
@@ -122,7 +123,8 @@ function connect() {
   ws.onmessage = event => {
     if (state.id !== currentId) return;
     const e = JSON.parse(event.data);
-    if (e.type === 'state') render(e.state);
+    if(e.type==='state_patch'){try{render(applyStatePatch(state,e));}catch{socket({type:'resync'});}}
+    else if (e.type === 'state') render(e.state);
     else if (e.type === 'mic_ready') { ready = true; transcribing = e.transcribe; render(state); }
     else if (e.type === 'tts_start') { halt(); currentEpoch = e.epoch; blockedEpoch = null; playbackStart = 0; }
     else if (e.type === 'tts_chunk') chunk(e);

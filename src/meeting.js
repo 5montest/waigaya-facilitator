@@ -10,7 +10,7 @@ export function canSpeak(state) {
 }
 export function initialMeeting(clock = Date.now) {
   return { mode: 'assistant', status: 'created', quiet: false, startedAt: null, endedAt: null, endReason: null,
-    guildId: null, voiceChannelId: null, ownerId: null, participantIds: [], outputChannelId: null,
+    guildId: null, voiceChannelId: null, ownerId: null, participantIds: [], outputChannelId: null, outputRevision:0,destinationHistory:[],
     emptySince: null, autoFinishAfterMs: 180000, recordingNoticeSentAt: null,
     minutesStatus: 'none', minutesVersion: 0, minutesHistory: [], publications: [], gaps: [], health: {}, lastError: null };
 }

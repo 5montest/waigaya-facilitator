@@ -14,7 +14,8 @@
     "discord": "node --env-file-if-exists=.env.local --env-file-if-exists=.env.discord src/discord/bot.js",
     "discord:setup": "node --env-file-if-exists=.env.local --env-file-if-exists=.env.discord scripts/discord-setup.js",
     "discord:auth": "node scripts/init-discord-service.js",
-    "discord:migrate": "node scripts/migrate-discord-meeting.js"
+    "discord:migrate": "node scripts/migrate-discord-meeting.js",
+    "bench:storage": "node scripts/benchmark-storage.js"
   },
   "dependencies": {
     "@discordjs/opus": "^0.10.0",

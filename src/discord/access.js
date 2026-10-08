@@ -12,16 +12,20 @@ export function requireAccess(state, interaction, channel, { live = false, roles
   if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect])) throw new Error('会議のボイスチャンネルを閲覧・接続できる権限が必要です。');
   if (live && interaction.guild?.voiceStates.cache.get(interaction.user.id)?.channelId !== state.voiceChannelId) throw new Error('Botと同じボイスチャンネルに参加して操作してください。');
 }
-export function requireOutput(channel, actor, bot) {
-  if (!channel || channel.type !== ChannelType.GuildText) throw new Error('公開先には通常のテキストチャンネルを選んでください。');
-  if (!channel.permissionsFor(actor)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) throw new Error('公開先を閲覧・投稿できる権限が必要です。');
-  if (!channel.permissionsFor(bot)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles])) throw new Error('公開先でBotの閲覧・送信・ファイル添付権限を確認してください。');
+export function requireDestinationView(channel,actor) {
+  if(actor.guild?.id&&(channel?.guildId||channel?.guild?.id)!==actor.guild.id)throw new Error('同じサーバーの保存先を選んでください。');
+  if(!channel||![ChannelType.GuildForum,ChannelType.GuildText].includes(channel.type))throw new Error('保存先が削除されたか未対応です。フォーラムか通常テキストを選び直してください。');
+  if(!channel.permissionsFor(actor)?.has(PermissionFlagsBits.ViewChannel))throw new Error('公開先を閲覧できる権限が必要です。');
+}
+export function requireOutput(channel,actor,bot) {
+  requireDestinationView(channel,actor);
+  if(!channel.permissionsFor(bot)?.has([PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.AttachFiles]))throw new Error('保存先でBotの閲覧・送信・ファイル添付権限を確認してください。');
 }
 export class Confirmations {
   constructor({ clock = Date.now, ttl = 60000 } = {}) { this.clock = clock; this.ttl = ttl; this.items = new Map(); }
-  issue(operation, state, userId) {
+  issue(operation, state, userId, details={}) {
     this.sweep(); const id = randomUUID();
-    this.items.set(id, { operation, sessionId: state.id, version: state.minutesVersion, userId, expiresAt: this.clock() + this.ttl }); return id;
+    this.items.set(id, { operation, sessionId: state.id, version: state.minutesVersion, channelId:state.outputChannelId,outputRevision:state.outputRevision||0, userId, expiresAt: this.clock() + this.ttl,...details }); return id;
   }
   take(id, userId) {
     const item = this.items.get(id);

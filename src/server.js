@@ -14,10 +14,12 @@ import { loadOpenAIKey, loadServiceToken } from './credentials.js';
 import { requestAllowed } from './network.js';
 
 import { MinutesGenerator, checkMinutes, minutesMarkdown, minutesStale } from './minutes.js';
+import { applyPublication, approveVersion, changeDestination, normalizePublications } from './publication.js';
+import { stateMessage } from './state-sync.js';
 import { activeStatuses, canSpeak, modes } from './meeting.js';
 
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), '../public');
-const staticFiles = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'], '/capture.js': ['capture.js', 'text/javascript'], '/lan': ['lan.html', 'text/html'], '/lan.js': ['lan.js', 'text/javascript'], '/autonomy.js': ['../src/discord/autonomy.js', 'text/javascript'] };
+const staticFiles = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'], '/capture.js': ['capture.js', 'text/javascript'], '/lan': ['lan.html', 'text/html'], '/lan.js': ['lan.js', 'text/javascript'], '/autonomy.js': ['../src/discord/autonomy.js', 'text/javascript'], '/state-sync.js': ['../src/state-sync.js','text/javascript'] };
 function json(res, status, value) { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); }
 async function readBody(req) {
   let body = '';
@@ -37,6 +39,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
   const protectedSession = state => state?.guildId || state?.utterances?.some(u => u.source === 'discord');
   // Crash recovery is read-only with regard to microphones. Explicit resume is required.
   for (const saved of store.list()) {
+    normalizePublications(saved);
     if (!protectedSession(saved)) continue;
     if (['recording', 'empty_grace', 'created'].includes(saved.status) || !saved.status) { saved.status = 'paused'; saved.endReason = 'server_restarted'; saved.gaps ??= []; saved.gaps.push({ kind: 'server_restarted', startedAt: saved.lastPersistedAt || null, endedAt: Date.now() }); }
     else if (saved.status === 'finalizing') { saved.status = 'finalize_failed'; saved.minutesStatus = 'failed'; }
@@ -57,7 +60,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
     return r;
   }
   function send(ws, event) { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event)); }
-  function publish(r) { for (const ws of r.clients) send(ws, { type: 'state', state: r.c.snapshot() }); }
+  function publish(r,{volatile=false}={}) { for(const ws of r.clients){ws.stateCache??={};send(ws,stateMessage(r.c.state,ws.stateCache,{volatile}));} }
   function save(r, kind, payload = {}) {
     if (appClosing) return;
     if (r.pending && ((!['reply', 'autonomous'].includes(r.pending.mode) && (r.c.state.revision !== r.pending.revision || r.c.state.voiceEpoch !== r.pending.voiceEpoch)) || r.c.state.request?.id !== r.pending.requestId || r.c.state.request?.status !== 'thinking')) {
@@ -70,9 +73,9 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
     r.c.state.sequence = (r.c.state.sequence ?? 0) + 1;
     const lastSavedAt = r.c.state.lastPersistedAt ?? null;
     r.c.state.lastPersistedAt = Date.now(); r.c.state.health.storage = 'ok';
-    try { store.save(r.c.snapshot(), kind, payload); }
+    try { store.save(r.c.state, kind, payload,{volatile:kind==='playback_progress'}); }
     catch { r.c.state.lastPersistedAt = lastSavedAt; r.c.healthy(false); r.c.state.health.storage = 'failed'; r.c.state.lastError = '保存に失敗しました。直近の更新が保存されたとは確認できません。'; publish(r); throw new Error(r.c.state.lastError); }
-    publish(r);
+    publish(r,{volatile:kind==='playback_progress'});
   }
   async function drainBrowser(r) {
     r.finishDraining = true; r.sttHandle?.end(); let timer, timeout = false;
@@ -141,10 +144,20 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
       if (url.pathname === '/api/config' && req.method === 'GET') {
         json(res, 200, { models: catalog.filter(m => m.provider === 'openai').map(m => ({ ...m, configured: Boolean(keyFor('openai')) })), defaultModel: 'gpt-6.1-sol', audio: { provider: 'openai', configured: Boolean(keyFor('openai')), sampleRate: 24000, sttModels, defaultSttModel, ttsModel, voice: process.env.WAIGAYA_OPENAI_VOICE || 'marin', speakerDiarization: false }, connection: { httpsUrl, certificateUrl: caCertificate ? '/lan-ca.crt' : null, certificateFingerprint }, mode: 'manual', qualityVerified: false }); return;
       }
+      const settingsMatch=url.pathname.match(/^\/api\/guilds\/(\d{17,22})\/settings$/);
+      if(settingsMatch){
+        if(!serviceAuthorized(req)){json(res,403,{error:'設定はDiscordの管理者操作から変更してください。'});return;}
+        if(req.method==='GET'){json(res,200,store.guildSettings(settingsMatch[1]));return;}
+        if(req.method!=='POST')throw new Error('設定操作を確認してください。');
+        const body=await readBody(req);
+        if(body.channelId!==null&&!/^\d{17,22}$/.test(body.channelId||''))throw new Error('保存先を選んでください。');
+        json(res,200,store.saveGuildSettings({guildId:settingsMatch[1],defaultMinutesChannelId:body.channelId,updatedBy:body.actorId,updatedAt:Date.now()}));return;
+      }
       if (url.pathname === '/api/sessions' && req.method === 'POST') {
         const body = await readBody(req);
         if (body.discord && !serviceAuthorized(req)) { json(res, 403, { error: 'Discord会議は認証済みBotから開始してください。' }); return; }
-        const metadata = body.discord || {};
+        const metadata = {...body.discord};
+        if(body.discord&&metadata.outputChannelId===undefined)metadata.outputChannelId=store.guildSettings(metadata.guildId).defaultMinutesChannelId;
         if (body.discord && !['guildId', 'voiceChannelId', 'ownerId'].every(k => /^\d{17,22}$/.test(metadata[k] || ''))) throw new Error('Discord会議の識別情報が不正です。');
         const c = new Controller({ mode: 'minutes', ...metadata });
         if (body.mode) c.configure({ mode: body.mode });
@@ -153,7 +166,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
       }
       if (url.pathname === '/api/sessions' && req.method === 'GET') {
         if (!serviceAuthorized(req)) { json(res, 403, { error: '会議一覧はDiscordから確認してください。' }); return; }
-        json(res, 200, store.list().filter(s => s.guildId === url.searchParams.get('guildId')).map(s => ({ id: s.id, topic: s.topic, status: s.status, mode: s.mode, startedAt: s.startedAt, ownerId: s.ownerId, voiceChannelId: s.voiceChannelId, minutesStatus: s.minutesStatus, minutesVersion: s.minutesVersion })).sort((a,b) => (b.startedAt || 0) - (a.startedAt || 0))); return;
+        json(res, 200, store.list().filter(s => s.guildId === url.searchParams.get('guildId')).map(s => ({ id: s.id,guildId:s.guildId, topic: s.topic, status: s.status, mode: s.mode, startedAt: s.startedAt, ownerId: s.ownerId, voiceChannelId: s.voiceChannelId, minutesStatus: s.minutesStatus, minutesVersion: s.minutesVersion })).sort((a,b) => (b.startedAt || 0) - (a.startedAt || 0))); return;
       }
       const match = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})(?:\/(events|analyze|markdown|audit|finish|minutes|minutes.md|transcript.md|summary))?$/);
       if (!match) { json(res, 404, { error: '見つかりません。' }); return; }
@@ -176,6 +189,8 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
       }
       if (route === 'minutes') {
         if (body.action === 'retry') { void generateMinutes(r, { retry: true, summary: activeStatuses.includes(r.c.state.status) }).catch(() => {}); json(res, 202, r.c.snapshot()); return; }
+        if(body.action==='destination'){changeDestination(r.c.state,body);save(r,'destination_changed',body);json(res,200,r.c.snapshot());return;}
+        if(body.action?.startsWith('publication')){const before=structuredClone(r.c.state.publications);applyPublication(r.c.state,body);if(body.action==='publication_failure')r.c.state.health.discord_post='failed';else if(['publication','publication_link'].includes(body.action))r.c.state.health.discord_post='ok';try{save(r,body.action,{...body,approvedMarkdown:undefined});}catch(e){r.c.state.publications=before;const pending=before.find(p=>p.reservationId===body.reservationId);if(pending&&['publication','publication_link'].includes(body.action)){pending.status='needs_reconciliation';pending.errorCategory='result_storage_unknown';}throw e;}json(res,200,r.c.snapshot());return;}
         const version = r.c.state.minutesHistory.at(-1);
         if (!version || version.version !== body.version) throw new Error('議事録の版が変わりました。もう一度確認してください。');
         if (body.action === 'edit') {
@@ -184,17 +199,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
           r.c.state.minutesStatus = 'draft';
         } else if (body.action === 'approve') {
           if (minutesStale(r.c.state, version)) throw new Error('原発言が変わっています。再生成・確認してください。');
-          version.approvedAt = Date.now(); version.approvedBy = body.actorId || 'operator'; r.c.state.minutesStatus = 'approved'; version.approvedMarkdown = null; version.approvedMarkdown = minutesMarkdown(r.c.state, version);
-        } else if (['publication_reserve', 'publication'].includes(body.action)) {
-          if (!version.approvedAt || minutesStale(r.c.state, version) || body.channelId !== r.c.state.outputChannelId) throw new Error('確認済みの版と指定公開先が必要です。');
-          const old = r.c.state.publications.find(p => p.version === version.version && p.channelId === body.channelId);
-          if (body.action === 'publication_reserve') {
-            if (old) throw new Error('この版は共有済みか送信結果の確認待ちです。二重投稿は行いません。');
-            r.c.state.publications.push({ version: version.version, channelId: body.channelId, status: 'pending', messageId: null, at: Date.now() });
-          } else {
-            if (!old || old.status !== 'pending') throw new Error('共有の予約がありません。');
-            old.messageId = body.messageId; old.status = 'published'; old.publishedAt = Date.now();
-          }
+          approveVersion(r.c.state,version,body.actorId||'operator');
         } else throw new Error('議事録の操作が不正です。');
         save(r, 'minutes_' + body.action, { actorId: body.actorId, version: body.version }); json(res, 200, r.c.snapshot()); return;
       }
@@ -229,7 +234,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
           }
           default: throw new Error('操作が不正です。');
         }
-        save(r, body.type, body); json(res, 200, r.c.snapshot()); return;
+        save(r, body.type, body); json(res,200,req.headers.prefer==='return=minimal'?{id:r.c.state.id,sequence:r.c.state.sequence,ack:true}:r.c.snapshot()); return;
       }
       if (route === 'analyze') {
         if (body.provider !== 'openai') throw new Error('MVPではOpenAIのモデルを選んでください。');
@@ -278,7 +283,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
   server.on('upgrade', upgrade);
   secureServer?.on('upgrade', upgrade);
   function attach(ws, r) {
-    r.clients.add(ws); send(ws, { type: 'state', state: r.c.snapshot() });
+    r.clients.add(ws); ws.stateCache={};send(ws,stateMessage(r.c.state,ws.stateCache));
     let stt = null, healthy = false, closing = false;
     const lost = () => { healthy = false; if (r.micOwner === ws) { r.c.healthy(false); try { save(r, 'microphone_lost'); } catch { send(ws, { type:'error',error:'保存に失敗しました。直近の更新は保存を確認できません。音声入力を停止します。' }); } } };
     ws.on('message', (raw, binary) => {
@@ -290,6 +295,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
           stt.send(raw); r.heartbeatAt = Date.now(); return;
         }
         event = JSON.parse(raw.toString());
+        if(event.type==='resync'){ws.stateCache={};send(ws,stateMessage(r.c.state,ws.stateCache));return;}
         if (event.type === 'mic_start') {
           if (r.finishDraining || ['paused', 'empty_grace', 'finalizing', 'completed', 'finalize_failed'].includes(r.c.state.status)) throw new Error('記録は停止中です。明示的に再開してください。');
           if (!r.c.state.guildId && r.c.state.status === 'created') r.c.lifecycle('start');
@@ -338,7 +344,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
             onError: e => { if (r.c.state.outputEpoch === permit.epoch) { r.c.stop('tts_failed'); r.c.state.error = e.message; save(r, 'tts_failed'); } },
           });
         } else if (event.type === 'playback' && r.micOwner === ws) {
-          if (r.c.played(event.epoch, Number(event.heardMs) || 0)) save(r, 'playback_progress', { epoch: event.epoch, heardMs: event.heardMs });
+          if (r.c.played(event.epoch, Number(event.heardMs) || 0)&&Date.now()-(r.progressSavedAt||0)>=1000){r.progressSavedAt=Date.now();save(r, 'playback_progress', { epoch:event.epoch,heardMs:event.heardMs });}
         } else if (event.type === 'playback_done' && r.micOwner === ws) {
           r.c.stop('completed', event.epoch); save(r, 'playback_completed');
         } else if (event.type === 'stop') {
