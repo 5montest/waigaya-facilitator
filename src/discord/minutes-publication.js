@@ -17,9 +17,10 @@ export function forumTitle(state,version) {
   const date=m.startedAt?new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(m.startedAt)):'日付不明';
   return Array.from(`${date}｜${String(m.topic||state.topic).replace(/[\r\n\t]/g,' ').replace(/@/g,'＠')}`).slice(0,100).join('');
 }
+const meetingTime=at=>at==null?'不明':new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(at));
 export function shortMinutes(state,version) {
   const m=version.metadata||state,d=version.document;
-  const lines=[version.approvedAt?'議事録（確認済み）':'議事録（AI生成・未確認）',version.approvedAt?'操作担当者の確認であり、参加者全員の合意を保証しません。':'AIによる下書きです。人の確認・参加者の合意を示すものではありません。',`議題：${safeText(m.topic||state.topic)}`,`日時：${m.startedAt?new Date(m.startedAt).toISOString():'不明'}〜${m.endedAt?new Date(m.endedAt).toISOString():'不明'}`,`出席者（記録で確認）：${safeText((m.participantNames||[]).join('、')||'不明')}`];
+  const lines=[version.approvedAt?'議事録（確認済み）':'議事録（AI生成・未確認）',version.approvedAt?'操作担当者の確認であり、参加者全員の合意を保証しません。':'AIによる下書きです。人の確認・参加者の合意を示すものではありません。',`議題：${safeText(m.topic||state.topic)}`,`日時（日本時間）：${meetingTime(m.startedAt)}〜${meetingTime(m.endedAt)}`,`出席者（記録で確認）：${safeText((m.participantNames||[]).join('、')||'不明')}`];
   for(const [label,items] of [['概要',d.overview],['確認済み決定',version.confirmedDecisions||[]],['決定候補（未確認）',d.decisionCandidates],['未決事項',d.openIssues],['アクション（候補）',d.actionItems]]){
     lines.push(label+': '+(items.length?items.slice(0,2).map(i=>safeText(i.text).slice(0,130)+(label.startsWith('アクション')?`／担当:${safeText(i.owner||'不明')}／期限:${safeText(i.deadline||'不明')}`:'')).join('・'):'該当なし'));
   }

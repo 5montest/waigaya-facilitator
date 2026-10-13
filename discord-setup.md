@@ -29,7 +29,7 @@ WAIGAYA_DISCORD_RESPONSE_POLICY=on_call
 WAIGAYA_DISCORD_EMPTY_GRACE_MS=180000
 WAIGAYA_DISCORD_AUTO_PUBLISH=true
 # 任意・Bot側だけ。STT表記揺れの呼称をカンマ区切り
-WAIGAYA_DISCORD_ADDRESS_NAMES=ワイガヤ,わいがや,我ヶ谷,我が谷
+WAIGAYA_DISCORD_ADDRESS_NAMES=ワイガヤ,わいがや,我ヶ谷,我が谷,Yガヤ,yガヤ,ワイダヤ,わいだや
 WAIGAYA_DISCORD_CONTROL_ROLE_IDS=
 ```
 
@@ -106,3 +106,28 @@ PY
 不具合時は新Bot、次に新サーバーを停止し、更新後DBも別名で保全する。旧コード・旧依存関係・旧設定・更新前バックアップを戻し、旧コマンドを再登録、旧サーバー→旧Botの順で起動する。更新後の会議を消さず保全し、Discordに投稿された版と予約を照合してから運用を再開する。公開済み投稿があるのに更新前DBだけで再公開しない。
 
 保存期限・自動削除、OSによる常駐監視は未実装。管理者の保存・バックアップ方針を定める。
+
+## 実APIの接続・合成音声テスト
+
+人の録音を始めずに、管理者が明示的に実行する。合成音声の表記揺れ、実Opus→Discord用STT→直接回答→TTS、音声送信、フォーラムの未確認版・同じ投稿への更新を確認できる。実API費用が発生するためCIや通常のnpm testからは呼ばない。
+
+```bash
+# 接続・固定先・権限だけ（VCには入らない）
+npm run verify:discord
+# 合成音声でSTT・回答・TTS（人のDiscordマイク受信は含まない）
+npm run verify:discord -- --speech
+# 無人・Bot未接続の固定VCで短い合成音声を送信し、すぐ退出
+npm run verify:discord -- --play-voice
+```
+
+別の資格情報プロファイルを使うテスト用Botは、秘密値をコピーせず起動できる。HTTPは端末内だけ、既存DBとは別のテストDBを使う。起動・再起動だけではVCへ参加せず録音しない。終了はSIGINT/SIGTERMで、継続中の会議を停止状態として保存する。
+
+```bash
+npm run discord:test -- --profile /path/to/existing/workspace --database data/discord-test.sqlite --register
+# 起動中のテストサーバーと同じDBを指定。合成音声の明示テスト投稿ができる
+npm run verify:discord -- --profile /path/to/existing/workspace --speech --publish --server http://127.0.0.1:8875 --database data/discord-test.sqlite
+```
+
+`--publish` は実フォーラムへの投稿を伴う。自動公開ポリシー・接続認証が必要で、開始前に「自動テスト・合成音声・人の録音なし」とVCチャットへ表示する。テストジョブをDBへ直接投入して終了生成・公開を検証するため、人のstart操作・Discord音声受信・3分の退出猶予を実通話確認した代用にはしない。予約が要照合なら再送せず管理者がreconcileを使う。
+
+検証報告は無音声のJSONとしてローカルresultsへ保存する。人の元音声は保存しない。[2026年10月13日の結果](docs/live-validation-20261013.md)を参照。

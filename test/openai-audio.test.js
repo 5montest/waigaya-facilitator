@@ -76,3 +76,9 @@ test('不完全なPCMやAPI拒否を正常な音声と扱わず、生のAPIエ�
     assert.ok(error instanceof Error); assert.equal(error.message.includes('raw sensitive'),false);
   }
 });
+
+test('Discord用STTの呼称ヒントを送信し、Whisperへ未対応promptを送らない',()=>{
+ const prompt='記録係はワイガヤです。';assert.equal(transcriptionConfig('gpt-transcribe',{prompt}).session.audio.input.transcription.prompt,prompt);
+ assert.equal(transcriptionConfig('gpt-realtime-whisper',{prompt}).session.audio.input.transcription.prompt,undefined);
+ assert.throws(()=>transcriptionConfig('gpt-transcribe',{prompt:'a'.repeat(1001)}));
+});

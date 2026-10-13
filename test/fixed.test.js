@@ -38,11 +38,30 @@ test('VoiceAddressingは暫定・再送・Bot音源・名前だけの連呼を�
 test('呼びかけプロンプトは直接質問・情報回答だけを送り、AI発言を人の根拠にしない',async()=>{
  const {analyze,parseResult}=await import('../src/models.js');const old=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY='mock-only';
  const state={topic:'比較',phase:'organize',decisions:[],aiTurns:[],utterances:[{id:'call',revision:2,final:true,text:'ワイガヤ、これはどんな仕組み？',source:'discord'},{id:'ai',revision:1,final:true,text:'全員合意した。',source:'ai'}],request:{mode:'voice_request',voiceRequest:{utteranceId:'call',revision:2,userId:ids.owner,question:'これはどんな仕組み？'}}};
- try{const r=await analyze({provider:'openai',model:'gpt-6.1-sol',state,fetchImpl:async(_,args)=>{const b=JSON.parse(args.body),input=JSON.parse(b.input);assert.match(b.instructions,/直接の質問/);assert.match(b.instructions,/公開・削除/);assert.match(b.instructions,/最新情報を調べたと偽りません/);assert.equal(b.tools,undefined);assert.equal(b.store,false);assert.equal(b.text.format.strict,true);assert.equal(input.utterances.length,1);assert.equal(input.voiceRequest.utteranceId,input.utterances[0].id);return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({action:'summary',text:'一般的にはこの仕組みです。',reason:'直接回答',notes:[],evidence:[{utteranceId:input.voiceRequest.utteranceId,revision:2}]})}]}],usage:{input_tokens:1,output_tokens:1}});}});assert.equal(r.result.evidence[0].utteranceId,'call');assert.throws(()=>parseResult(JSON.stringify({...r.result,evidence:[{utteranceId:'ai',revision:1}]}),state));}
+ try{const r=await analyze({provider:'openai',model:'gpt-6.1-sol',state,fetchImpl:async(_,args)=>{const b=JSON.parse(args.body),input=JSON.parse(b.input);assert.match(b.instructions,/直接の質問/);assert.match(b.instructions,/公開・削除/);assert.match(b.instructions,/最新情報を調べたと偽りません/);assert.deepEqual(b.reasoning,{effort:'low'});assert.equal(b.tools,undefined);assert.equal(b.store,false);assert.equal(b.text.format.strict,true);assert.equal(input.utterances.length,1);assert.equal(input.voiceRequest.utteranceId,input.utterances[0].id);return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({action:'summary',text:'一般的にはこの仕組みです。',reason:'直接回答',notes:[],evidence:[{utteranceId:input.voiceRequest.utteranceId,revision:2}]})}]}],usage:{input_tokens:1,output_tokens:1}});}});assert.equal(r.result.evidence[0].utteranceId,'call');assert.throws(()=>parseResult(JSON.stringify({...r.result,evidence:[{utteranceId:'ai',revision:1}]}),state));}
  finally{if(old===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=old;}
 });
 
 test('固定先検証は削除・種類違い・別ギルド・フォーラム権限喪失を拒否する',async()=>{
  const {ChannelType}=await import('discord.js');const policy=fixedPolicy(env);const guild={id:ids.guild,members:{me:{}},channels:{fetch:async id=>channels.get(id)}};const all={has:()=>true};const channels=new Map([[ids.vc,{type:ChannelType.GuildVoice,guildId:ids.guild,permissionsFor:()=>all}],[ids.forum,{type:ChannelType.GuildForum,guildId:ids.guild,permissionsFor:()=>all}]]);
  await validateChannels(guild,policy);const forum=channels.get(ids.forum);forum.guildId=ids.other;await assert.rejects(()=>validateChannels(guild,policy));forum.guildId=ids.guild;forum.type=ChannelType.GuildText;await assert.rejects(()=>validateChannels(guild,policy));forum.type=ChannelType.GuildForum;forum.permissionsFor=()=>({has:()=>false});await assert.rejects(()=>validateChannels(guild,policy));channels.delete(ids.forum);await assert.rejects(()=>validateChannels(guild,policy));
+});
+
+test('実STTで観測したYガヤの呼びかけを受け付け、Botの名前を話題にしただけでは動かない',()=>{
+ assert.equal(detectAddress('Yガヤ、二つの案を比較して').addressed,true);
+ assert.equal(detectAddress('yガヤ、まとめて').addressed,true);
+ assert.equal(detectAddress('ワイダヤ、比較して').addressed,true);
+ assert.equal(detectAddress('ワイダや、比較して').addressed,true);
+ assert.equal(detectAddress('ワイがや、まとめて').addressed,true);
+ assert.equal(detectAddress('ワイダヤっていうBot').addressed,false);
+ assert.equal(detectAddress('YガヤっていうBotを作っている').addressed,false);
+ assert.equal(detectAddress('Yガヤ、っていうBotを作っている').addressed,false);
+ assert.equal(detectAddress('前にYガヤが話したこと').addressed,false);
+});
+
+test('利用者のstatusは待機・投稿リンク・保存失敗を表示し、日常操作に実装名を出さない',async()=>{
+ const {fixedStatus}=await import('../src/discord/status.js');const c=new Controller({fixedOperation:true,topic:'会議',mode:'assistant',status:'recording',startedAt:1000,health:{},request:{status:'thinking'},outputChannelId:ids.forum,publicationPolicy:'auto_publish_ai_draft'});
+ const thinking=fixedStatus(c.state,61000);assert.match(thinking,/音声回答を考えています/);assert.ok(!thinking.includes('SQLite'));
+ c.state.status='completed';c.state.minutesStatus='draft';c.state.minutesHistory=[{version:1,approvedAt:null}];c.state.publications=[{version:1,channelId:ids.forum,status:'published',url:'https://discord.com/channels/123/456/789'}];assert.match(fixedStatus(c.state),/AI生成・未確認/);assert.match(fixedStatus(c.state),/<https:\/\/discord.com\/channels\/123\/456\/789>/);
+ c.state.health.storage='failed';assert.match(fixedStatus(c.state),/保存されたとは確認できません/);
 });

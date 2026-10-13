@@ -89,3 +89,7 @@ test('投稿URL照合はギルド・投稿先・Bot作者・識別子をすべ�
  r.thread.messages.fetch=async()=>({id:threadId,author:{id:botId},content:'別会議の投稿'});await assert.rejects(()=>verifyMessageLink({state:r.state,publication:p,guild:r.channel.guild,bot,url}),/識別/);
  await assert.rejects(()=>verifyMessageLink({state:r.state,publication:p,guild:r.channel.guild,bot,url:url.replace(guildId,'999999999999999999')}),/同じサーバー/);
 });
+
+test('フォーラム本文の日付は日本時間と明示し、UTCの日付境界でもタイトルと一致する',()=>{
+ const {state,version}=fixture();version.metadata={topic:'会議',startedAt:Date.parse('2026-10-13T22:00:00Z'),endedAt:Date.parse('2026-10-13T23:00:00Z'),participantNames:[]};assert.match(shortMinutes(state,version),/日時（日本時間）：2026-10-14 07:00〜2026-10-14 08:00/);assert.match(forumTitle(state,version),/^2026-10-14/);
+});

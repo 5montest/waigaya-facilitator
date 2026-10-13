@@ -14,12 +14,12 @@ export class Controller {
     };
   }
   snapshot() { return structuredClone(this.state); }
-  invalidate({ preserveReply = false } = {}) {
+  invalidate({ preserveReply = false, reason = 'context_changed' } = {}) {
     this.state.candidate = null;
     if (!(preserveReply && ['reply', 'autonomous', 'voice_request'].includes(this.state.request?.mode))) this.stop('context_changed');
     if (!(preserveReply && ['reply', 'autonomous', 'voice_request'].includes(this.state.request?.mode))) {
       this.state.reply = null;
-      if (this.state.request) this.state.request.status = 'needs_refresh';this.voiceRequestStatus('cancelled');
+      if (this.state.request) {this.state.request.status = 'needs_refresh';this.state.request.invalidatedBy=reason;}this.voiceRequestStatus('cancelled');
     }
     this.state.revision++;
     if (preserveReply && ['autonomous','voice_request'].includes(this.state.request?.mode)) { this.state.request.revision = this.state.revision; if (this.state.reply) this.state.reply.snapshotRevision = this.state.revision; }
@@ -60,7 +60,7 @@ export class Controller {
     // 依頼への返答は依頼時点の確定発言を使う。追加・未確定発言の更新で検討を捨てない。
     // 確定発言の訂正は、回答の前提が変わるので取り消す。
     const preserveReply = (!old || !old.final) && (!['autonomous','voice_request'].includes(this.state.request?.mode) || !final || !isMeaningful(text));
-    this.invalidate({ preserveReply });
+    this.invalidate({ preserveReply,reason:(!old||!old.final)&&final&&isMeaningful(text)?'new_utterance':'utterance_changed' });
     const next = { id, text, speaker, final, startMs, endMs, source: old?.source ?? source, userId:old?.userId??userId, revision: (old?.revision ?? 0) + 1, receivedAt: old?.receivedAt ?? this.clock() };
     if (old) Object.assign(old, next); else this.state.utterances.push(next);
     this.state.utterances.sort((a, b) => (a.startMs ?? a.receivedAt) - (b.startMs ?? b.receivedAt));

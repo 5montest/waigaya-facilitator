@@ -47,7 +47,7 @@ test('Discord設定はトークンをファイルから読み、外部サーバ�
 test('音声認識の設定完了前に届いたPCMと発話終了を保持し、確定結果に話者と時刻を付ける',async()=>{
   let handlers;const calls=[],utterances=[];
   const capture=transcribeSpeaker({speaker:'参加者 (123)',startedAt:1000,emit:u=>utterances.push(u),onError:assert.fail,onUsage:()=>{},connect:h=>{handlers=h;return{voice:v=>calls.push(['voice',v]),send:b=>calls.push(['send',b.length]),end:()=>calls.push(['end']),abort:()=>calls.push(['abort'])};}});
-  capture.write(samples([100,100,100,100]));capture.end();assert.deepEqual(calls,[]);handlers.onReady();assert.deepEqual(calls,[['voice',true],['send',2],['voice',false],['end']]);
+  assert.match(handlers.prompt,/ワイガヤ/);capture.write(samples([100,100,100,100]));capture.end();assert.deepEqual(calls,[]);handlers.onReady();assert.deepEqual(calls,[['voice',true],['send',2],['voice',false],['end']]);
   handlers.emit({id:'u',text:'条件を確認します。',startMs:0,endMs:40,final:true});assert.equal(utterances[0].speaker,'参加者 (123)');assert.equal(utterances[0].startMs,1000);assert.equal(utterances[0].source,'discord');
   handlers.onClose();await capture.closed;
 });

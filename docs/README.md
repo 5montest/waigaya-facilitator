@@ -4,6 +4,7 @@
 
 | 資料 | 内容 | HTML版 |
 |---|---|---|
+| [2026年10月13日の実環境検証](live-validation-20261013.md) | 合成音声の実API、VC送信、フォーラム投稿、修正した使いにくさ | — |
 | [改善実装の差分](improvement-report.md) | 固定VC・音声呼びかけ・自動退出／投稿、互換性、制約 | — |
 | [実通話の受け入れチェック](manual-acceptance.md) | 開始一回・声の応答・全員退出・未確認公開・復旧の手動確認 | — |
 | [全体設計](ai-waigaya-design.md) | 継続的な会話状態、発言制御、段階的な実装方針 | [HTML](ai-waigaya-design.html) |

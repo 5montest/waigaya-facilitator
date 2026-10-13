@@ -3,6 +3,7 @@ import { Client, GatewayIntentBits, Events, MessageFlags, ChannelType, Permissio
 import { joinVoiceChannel, entersState, VoiceConnectionStatus, EndBehaviorType } from '@discordjs/voice';
 import prism from 'prism-media';
 import { validateChannels,automaticTitle,policyMode } from './fixed-policy.js';
+import { fixedStatus } from './status.js';
 import { VoiceAddressing } from './addressing.js';
 import { FixedCompletionWorker } from './completion.js';
 import { discordConfig } from './config.js';
@@ -110,7 +111,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
       await ready(connection,VoiceConnectionStatus.Ready,20000);
       current={bridge,connection,channel,channelId:channel.id,captures:new Map(),sttFailures:new Map(),blockedUntil:new Map(),activeSpeakers:new Set(),transcriptions:new Set(),acceptAudio:true,closing:false,closed:false};
       playback=new DiscordPlayback(bridge,{onFailure:()=>{void fault(current,'tts');console.error('AI音声の再生に失敗しました。文字起こしは継続します。');}});
-      current.playback=playback;current.addressing=config.fixed?new VoiceAddressing(current,{names:config.addressNames,onFailure:async()=>channel.send(safe('AIの音声回答だけに失敗しました。文字起こしは継続します。'))}):null;meeting=current;connection.subscribe(playback.player);
+      current.playback=playback;current.addressing=config.fixed?new VoiceAddressing(current,{names:config.addressNames,onFailure:async()=>channel.send(safe('音声で回答できませんでした。記録は続いています。少し待って、もう一度ワイガヤと呼びかけてください。'))}):null;meeting=current;connection.subscribe(playback.player);
       bridge.on('failure',()=>{void fault(current,'connection',{gap:true}).finally(()=>finish(current,{reason:'connection_lost',abort:true})).catch(()=>{});});
       connection.on('error',()=>void finish(current,{reason:'connection_lost',abort:true}).catch(()=>{}));
       connection.on(VoiceConnectionStatus.Disconnected,()=>void finish(current,{reason:'connection_lost',abort:true}).catch(()=>{}));
@@ -376,7 +377,8 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
       }
       if(action==='publish'){await showReview(interaction,state,{alreadyApproved:true});return;}
       if(action==='status'){
-        await interaction.editReply(safe(`会議：${state.topic}\n記録：${statusLabels[state.status]||'状態確認が必要'}／モード：${modes[state.mode]}／AI音声：${canSpeak(state)?'利用可':'OFF'}\n経過：約${state.startedAt?Math.floor(((state.endedAt||Date.now())-state.startedAt)/60000):0}分\n公開：${publicationLabels[publicationState(state)]}${state.fixedOperation&&state.minutesHistory.at(-1)?(state.minutesHistory.at(-1).approvedAt?'／人が確認済み':'／AI生成・未確認'):''}\n保存：ホストSQLite（${state.health.storage==='failed'?'直近の保存を確認できません':'最新保存確認済み'}）／議事録：${minutesLabels[state.minutesStatus]||'未作成'}\n新しい音声の外部送信：${state.status==='recording'?'記録する発話をOpenAIへ送信':'停止'}\n公開先：${state.outputChannelId?`<#${state.outputChannelId}>`:'未指定'}\n${state.lastError||''}\n障害：${Object.entries(state.health).filter(([,v])=>v==='failed').map(([k])=>healthLabels[k]||'状態確認が必要').join('、')||'検出なし'}`));return;
+        if(state.fixedOperation){await interaction.editReply(safe(fixedStatus(state)));return;}
+        await interaction.editReply(safe(`会議：${state.topic}\n記録：${statusLabels[state.status]||'状態確認が必要'}／モード：${modes[state.mode]}／AI音声：${canSpeak(state)?'利用可':'OFF'}\n経過：約${state.startedAt?Math.floor(((state.endedAt||Date.now())-state.startedAt)/60000):0}分\n公開：${publicationLabels[publicationState(state)]}${state.fixedOperation&&state.minutesHistory.at(-1)?(state.minutesHistory.at(-1).approvedAt?'／人が確認済み':'／AI生成・未確認'):''}\n保存：ホストSQLite（${state.health.storage==='failed'?'直近の保存を確認できません':'最新保存確認済み'}）／議事録：${minutesLabels[state.minutesStatus]||'未作成'}\n新しい音声の外部送信：${state.status==='recording'?'記録する発話をOpenAIへ送信':'停止'}\n公開先：${state.outputChannelId?`<#${state.outputChannelId}>`:'未指定'}\n${state.publications.findLast(p=>p.status==='published')?.url?`投稿：<${state.publications.findLast(p=>p.status==='published').url}>\n`:''}${state.lastError||''}\n障害：${Object.entries(state.health).filter(([,v])=>v==='failed').map(([k])=>healthLabels[k]||'状態確認が必要').join('、')||'検出なし'}`));return;
       }
       if(action==='end'){if(meeting?.bridge.state.id!==state.id)throw new Error('記録中の会議がありません。');await finish(meeting);await interaction.editReply(safe('記録を終了しました。Botは退出し、議事録の処理を続けます。'));return;}
       if(action==='resume'&&!meeting){

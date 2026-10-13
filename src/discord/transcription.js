@@ -4,7 +4,7 @@ import { Downsample } from './audio.js';
 export function transcribeSpeaker({speaker,startedAt=Date.now(),emit,onError,onUsage,onClose=()=>{},connect=connectStt}){
   const convert=new Downsample();let ready=false,ended=false,aborted=false,queued=[],bytes=0,resolveClosed;
   const closed=new Promise(resolve=>{resolveClosed=resolve;});
-  const stt=connect({model:'gpt-transcribe',emit:u=>{if(!aborted)emit({...u,speaker,source:'discord',startMs:u.startMs==null?null:startedAt+u.startMs,endMs:u.endMs==null?null:startedAt+u.endMs});},onUsage,onError:e=>{aborted=true;onError(e);},onClose:()=>{resolveClosed();onClose();},
+  const stt=connect({model:'gpt-transcribe',prompt:'日本語の技術会議。記録係の名前はワイガヤ（我ヶ谷）。呼びかけ例：ワイガヤ、今の話をまとめて。',emit:u=>{if(!aborted)emit({...u,speaker,source:'discord',startMs:u.startMs==null?null:startedAt+u.startMs,endMs:u.endMs==null?null:startedAt+u.endMs});},onUsage,onError:e=>{aborted=true;onError(e);},onClose:()=>{resolveClosed();onClose();},
     onReady:()=>{if(aborted)return;ready=true;stt.voice(true);for(const b of queued)stt.send(b);queued=[];bytes=0;if(ended){stt.voice(false);stt.end();}},
   });
   return {

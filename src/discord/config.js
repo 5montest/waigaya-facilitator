@@ -1,3 +1,4 @@
+import { defaultAddressNames } from './addressing.js';
 import { fixedPolicy } from './fixed-policy.js';
 import { loadServiceToken } from '../credentials.js';
 import { readFileSync, lstatSync, realpathSync } from 'node:fs';
@@ -19,7 +20,7 @@ export function discordConfig({env=process.env,workspace=process.cwd(),requireTo
   if(requireToken&&!token)throw new Error('DISCORD_BOT_TOKEN_FILE又はDISCORD_BOT_TOKENを設定してください。');
   const server=new URL(env.WAIGAYA_DISCORD_SERVER || `http://127.0.0.1:${env.WAIGAYA_PORT || 8765}`);
   if(server.protocol!=='http:'||!['127.0.0.1','localhost'].includes(server.hostname)||server.username||server.password||server.pathname!=='/'||server.search||server.hash)throw new Error('Discord Botの接続先は同じ端末のHTTPサーバーにしてください。');
-  const addressNames=(env.WAIGAYA_DISCORD_ADDRESS_NAMES||'ワイガヤ,わいがや,我ヶ谷,我が谷').split(',').map(s=>s.trim()).filter(Boolean);
+  const addressNames=(env.WAIGAYA_DISCORD_ADDRESS_NAMES||defaultAddressNames.join(',')).split(',').map(s=>s.trim()).filter(Boolean);
   if(!addressNames.length||addressNames.length>20||addressNames.some(s=>s.length<2||s.length>32))throw new Error('呼び名は2〜32文字、最大20件で設定してください。');
   return {applicationId,guildId,token,fixed:fixedPolicy(env,{required:requireFixed}),addressNames,server:server.origin,serviceToken:loadServiceToken({env,workspace}),controlRoleIds:(env.WAIGAYA_DISCORD_CONTROL_ROLE_IDS||'').split(',').filter(Boolean)};
 }
