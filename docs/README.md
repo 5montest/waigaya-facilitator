@@ -1,9 +1,11 @@
 # 資料一覧
 
-普段の使い方は [Discord利用マニュアル](user-manual.md) を参照する。動作条件の詳細は [Discord版の現行仕様](../discord-spec.md)、管理者の導入手順は [設定手順](../discord-setup.md) に記載している。
+普段の使い方は [簡易説明書](quick-start.md)、訂正・トラブル対応は [Discord利用マニュアル](user-manual.md) を参照する。動作条件の詳細は [Discord版の現行仕様](../discord-spec.md)、管理者の導入手順は [設定手順](../discord-setup.md) に記載している。
 
 | 資料 | 内容 | HTML版 |
 |---|---|---|
+| [簡易説明書](quick-start.md) | startだけで静かに記録、必要なときだけ声で質問・本筋設定 | — |
+| [2026年10月15日の反映記録](deployment-20261015.md) | 稼働Botへの反映・バックアップ・確認範囲・復旧方法 | — |
 | [Discord利用マニュアル](user-manual.md) | 開始・声の質問・自動終了／投稿、訂正、困ったときの操作 | — |
 | [2026年10月13日の実環境検証](live-validation-20261013.md) | 合成音声の実API、VC送信、フォーラム投稿、修正した使いにくさ | — |
 | [改善実装の差分](improvement-report.md) | 固定VC・音声呼びかけ・自動退出／投稿、互換性、制約 | — |
