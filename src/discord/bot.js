@@ -100,18 +100,21 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
     })();
     return current.finishing.finally(()=>{if(current.closed&&meeting===current)meeting=null;});
   }
-  async function start(channel,topic,{sessionId,mode='minutes',ownerId,outputChannelId=null,noticeAt}={}){
+  async function start(channel,topic,{sessionId,mode='minutes',purpose,ownerId,outputChannelId=null,noticeAt}={}){
     if(config.fixed&&channel.id!==config.fixed.voiceChannelId)throw new Error('固定ボイスチャンネルから開始してください。');
     if(meeting||starting)throw new Error('別の会議を処理中です。/waigaya status で確認してください。');
     starting=true;let bridge,connection,playback,current;
     try{
       bridge=bridgeFactory(config.server,{serviceToken:config.serviceToken});
-      await bridge.open(topic,{sessionId,mode,discord:{guildId:channel.guild.id,voiceChannelId:channel.id,ownerId,outputChannelId,recordingNoticeSentAt:noticeAt,...(config.fixed?{autoPublicationNoticeAt:noticeAt}:{}),participantIds:[...channel.members.values()].filter(m=>!m.user.bot).map(m=>m.id)}});
+      await bridge.open(topic,{sessionId,mode,purpose,discord:{guildId:channel.guild.id,voiceChannelId:channel.id,ownerId,outputChannelId,recordingNoticeSentAt:noticeAt,...(config.fixed?{autoPublicationNoticeAt:noticeAt}:{}),participantIds:[...channel.members.values()].filter(m=>!m.user.bot).map(m=>m.id)}});
       connection=join({guildId:channel.guild.id,channelId:channel.id,adapterCreator:channel.guild.voiceAdapterCreator,selfDeaf:false,selfMute:false});
       await ready(connection,VoiceConnectionStatus.Ready,20000);
       current={bridge,connection,channel,channelId:channel.id,captures:new Map(),sttFailures:new Map(),blockedUntil:new Map(),activeSpeakers:new Set(),transcriptions:new Set(),acceptAudio:true,closing:false,closed:false};
       playback=new DiscordPlayback(bridge,{onFailure:()=>{void fault(current,'tts');console.error('AI音声の再生に失敗しました。文字起こしは継続します。');}});
-      current.playback=playback;current.addressing=config.fixed?new VoiceAddressing(current,{names:config.addressNames,onFailure:async()=>channel.send(safe('音声で回答できませんでした。記録は続いています。少し待って、もう一度ワイガヤと呼びかけてください。'))}):null;meeting=current;connection.subscribe(playback.player);
+      current.playback=playback;current.addressing=config.fixed?new VoiceAddressing(current,{names:config.addressNames,
+        canSetBrief:userId=>userId===bridge.state.ownerId||channel.members.get(userId)?.permissions?.has(PermissionFlagsBits.ManageGuild)||(config.controlRoleIds||[]).some(id=>channel.members.get(userId)?.roles?.cache?.has(id)),
+        onBriefNotice:async text=>channel.send({...safe(safeText(text)),flags:MessageFlags.SuppressEmbeds}),
+        onFailure:async()=>channel.send(safe('音声で回答できませんでした。記録は続いています。少し待って、もう一度ワイガヤと呼びかけてください。'))}):null;meeting=current;connection.subscribe(playback.player);
       bridge.on('failure',()=>{void fault(current,'connection',{gap:true}).finally(()=>finish(current,{reason:'connection_lost',abort:true})).catch(()=>{});});
       connection.on('error',()=>void finish(current,{reason:'connection_lost',abort:true}).catch(()=>{}));
       connection.on(VoiceConnectionStatus.Disconnected,()=>void finish(current,{reason:'connection_lost',abort:true}).catch(()=>{}));
@@ -170,8 +173,9 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
       throw new Error('通話に接続できません。記録は停止しました。権限・接続を確認し /resume を使ってください。');
     }finally{starting=false;}
   }
-  async function begin(interaction,channel,topic,mode,outputChannelId){
+  async function begin(interaction,channel,topic,mode,outputChannelId,purpose){
     if(beginning)throw new Error('開始処理中です。');beginning=true;try{
+    if(purpose!==undefined&&(typeof purpose!=='string'||!purpose.trim()||purpose.length>1000))throw new Error('本筋は1〜1,000文字で指定してください。');
     if(config.fixed){
       if(!policyReady)await initializePolicy(interaction.guild);else await validateChannels(interaction.guild,config.fixed);
       if(channel?.id!==config.fixed.voiceChannelId||humanCount(channel)===0)throw new Error('固定VCに参加してから開始してください。');
@@ -186,9 +190,10 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
     if(outputChannelId===undefined)outputChannelId=(await service.api(`/api/guilds/${config.guildId}/settings`)).defaultMinutesChannelId;
     if(outputChannelId){let target;try{target=await interaction.guild.channels.fetch(outputChannelId);}catch{throw new Error('保存先を取得できません。管理者が導入設定とチャンネル権限を確認してください。');}requireOutput(target,interaction.member,interaction.guild.members.me);}
     const notice = config.fixed?`会議を記録します。${mode==='minutes'?'AI音声は停止しています。':'ワイガヤと呼びかけると音声で返答します。'}音声をOpenAIのSTT・AIへ送り、原音声は保存せず文字起こしを保持します。全員退出後に自動終了し、${config.fixed.autoPublish?`<#${outputChannelId}> を閲覧できる全員へAI生成・未確認の議事録を自動公開します。`:'議事録を非公開保存します。'}`:`記録を開始します。モード：${modes[mode]}。音声はOpenAIへ送信、文字起こし・下書きはホストに保存。元音声は保存しません。公開先：${outputChannelId?`<#${outputChannelId}>（人が確認・公開操作するまで本文投稿なし）`:'未指定・本文の自動公開なし'}。`;
-    await channel.send(safe(notice));
-    await interaction.editReply(safe(notice));
-    const result=await start(channel,topic,{mode,ownerId:interaction.user.id,outputChannelId:outputChannelId||null,noticeAt:Date.now()});
+    const announced=notice+(purpose?`\n本筋：${safeText(purpose)}`:'');
+    await channel.send({...safe(announced),flags:MessageFlags.SuppressEmbeds});
+    await interaction.editReply(safe(announced));
+    const result=await start(channel,topic,{mode,purpose,ownerId:interaction.user.id,outputChannelId:outputChannelId||null,noticeAt:Date.now()});
     await interaction.editReply({...safe((config.fixed?`会議を記録しています。${mode==='minutes'?'AI音声は停止しています。':'ワイガヤと呼びかけると返答します。'}退出後は自動終了${config.fixed.autoPublish?`・議事録を <#${outputChannelId}> に投稿`:''}します。`:`記録中：${modes[mode]}。${mode==='minutes'?'AI音声は常にOFFです。':''}/pause は記録を一時停止、/quiet はAIだけ停止、/finish は会議を終了して議事録を作ります。`)),components:[]});return result;
     }finally{beginning=false;}
   }
@@ -340,7 +345,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
       if(action==='start'){
         if(!channel)throw new Error('通話に入ってから /start を使ってください。');
         const topic=interaction.options.getString('topic')||`Discord：${channel.name}`,mode=interaction.options.getString('mode'),outputChannelId=interaction.options.getChannel('output_channel')?.id;
-        if(config.fixed){await interaction.deferReply({flags:MessageFlags.Ephemeral});await begin(interaction,channel,interaction.options.getString('topic')||undefined,policyMode(config.fixed),outputChannelId);return;}
+        if(config.fixed){await interaction.deferReply({flags:MessageFlags.Ephemeral});await begin(interaction,channel,interaction.options.getString('topic')||undefined,policyMode(config.fixed),outputChannelId,interaction.options.getString('purpose')||undefined);return;}
         if(!mode){
           const id=confirmations.issue('start',{id:channel.id},interaction.user.id);starts.set(id,{ownerId:interaction.user.id,channelId:channel.id,topic,outputChannelId,expiresAt:Date.now()+60000});
           await interaction.reply({...safe('モードを選んで開始してください。「議事録のみ」はAI音声なしです。選択するまでは記録しません。'),flags:MessageFlags.Ephemeral,components:chooseMode(id)});return;

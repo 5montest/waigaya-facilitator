@@ -27,6 +27,7 @@ export function commandFor({fixed=false}={}) {
   value.description='固定VCで開始し、退出後に議事録を自動投稿します';
   value.options=value.options.filter(s=>['start','status','pause','resume','quiet','minutes','reconcile','help','stop','finish'].includes(s.name));
   const start=value.options.find(s=>s.name==='start');start.description='固定VCで会議を開始。声で呼ぶと返答し、退出後は自動処理';start.options=start.options.filter(o=>o.name==='topic');
+  start.options.push({type:3,name:'purpose',description:'任意：会議の目的・比較軸。開始後に声でも指定できます',max_length:1000});
   value.options.splice(2,0,{type:1,name:'end',description:'非常用：会議を終了し、Bot退出・議事録処理へ進む'});
   return value;
 }
@@ -53,7 +54,7 @@ export function minutesControls(state,userId) {
 
 export function chooseMode(id) { return [new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`wg:start:${id}`).setPlaceholder('会議のモードを選んで開始').addOptions(Object.entries(modes).map(([value,label])=>({value,label}))))]; }
 export function help(developer = false,fixed=false) {
-  if(fixed)return developer?'運用：固定VC・フォーラムを導入時に設定。原本はSQLite、応答はOpenAI。未確認の自動公開と人の確認は別の状態です。異常時はstatus・pause/resume・end・minutes・管理者reconcileを使用。stopは旧AI音声停止の意味を維持します。保存期間・削除方針は管理者が運用します。':'固定VCで /waigaya start を1回実行してください。ワイガヤと呼ぶと音声で答えます。そのまま全員退出すると3分後に自動終了し、固定フォーラムへAI生成・未確認の議事録を投稿します。音声はOpenAIへ送信、原音声は保存せず、文字起こしをホストに保持します。フォーラムを閲覧できる全員に見えます。';
+  if(fixed)return developer?'運用：固定VC・フォーラムを導入時に設定。原本はSQLite、応答はOpenAI。未確認の自動公開と人の確認は別の状態です。異常時はstatus・pause/resume・end・minutes・管理者reconcileを使用。stopは旧AI音声停止の意味を維持します。保存期間・削除方針は管理者が運用します。':'固定VCで /waigaya start を1回実行してください。ワイガヤと呼ぶと音声で答えます。「ワイガヤ、今日の目的は…」で本筋を設定できます。本筋を設定しても自動発言は始めません。必要なときだけ「脱線したら声をかけて」と依頼できます。そのまま全員退出すると3分後に自動終了し、固定フォーラムへAI生成・未確認の議事録を投稿します。音声はOpenAIへ送信、原音声は保存せず、文字起こしをホストに保持します。フォーラムを閲覧できる全員に見えます。';
   return developer ? '運用：Node.jsの会議サーバー→Botの順に起動。再起動後は自動記録せず /resume を使用。原本はSQLite、AI処理はOpenAI、承認後の共有だけDiscordへ送信。設定・失敗分類・保存期限はリポジトリの操作ガイド参照。' :
     '開始：/start → モード選択（省略時は議事録のみ）。\n記録を止める：/pause、再開：/resume。AIだけ黙らせる：/quiet。\n終了：/finish → 確認 → 議事録の下書き。\n確認・訂正・保存・投稿：/minutes → 確認して投稿 → 保存先と公開範囲を確認。\n管理者の初期設定：/setup、会議の保存先変更：/destination、結果不明の照合：/reconcile。旧 /publish は確認済み版の再共有。\n記録：音声はOpenAIへ送信、文字起こし・下書きはホストのSQLiteに保存。元音声は保存しません。全文の自動投稿はしません。\nこの操作画面とファイルは本人だけに表示。AI音声は通話全員、共有投稿は公開先を見られる人に届きます。';
 }

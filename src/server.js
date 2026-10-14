@@ -18,6 +18,8 @@ import { applyPublication, approveVersion, changeDestination, normalizePublicati
 import { fixedPolicy as loadFixedPolicy,validatePolicy,policyMode } from './discord/fixed-policy.js';
 import { stateMessage } from './state-sync.js';
 import { activeStatuses, canSpeak, modes } from './meeting.js';
+import { briefCommand,updateBrief,briefAcknowledgement,automaticSpeechAllowed,currentBrief } from './meeting-brief.js';
+import { detectAddress } from './discord/addressing.js';
 
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), '../public');
 const staticFiles = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'], '/capture.js': ['capture.js', 'text/javascript'], '/lan': ['lan.html', 'text/html'], '/lan.js': ['lan.js', 'text/javascript'], '/autonomy.js': ['../src/discord/autonomy.js', 'text/javascript'], '/state-sync.js': ['../src/state-sync.js','text/javascript'] };
@@ -110,7 +112,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
         const document = await minutesGenerator.generateDraft(snapshot, { signal: abort.signal, onUsage: usage => { r.c.state.usage.push({ ...usage, outcome: 'received', at: Date.now() }); save(r, 'minutes_usage'); } });
         if (appClosing) return;
         checkMinutes(document, snapshot);
-        const version = { version: ++r.c.state.minutesVersion, document, confirmedDecisions: structuredClone(snapshot.decisions), metadata: { topic:snapshot.topic,startedAt:snapshot.startedAt,endedAt:snapshot.endedAt,participantNames:[...new Set(snapshot.utterances.map(u=>u.speaker).filter(Boolean))] }, generatedAt: Date.now(), approvedAt: null, approvedBy: null,humanReviewedAt:null,humanReviewedBy:null,
+        const version = { version: ++r.c.state.minutesVersion, document, confirmedDecisions: structuredClone(snapshot.decisions), metadata: { topic:snapshot.topic,meetingBrief:structuredClone(currentBrief(snapshot)),briefNeedsReview:Boolean(snapshot.meetingBrief?.needsReview),startedAt:snapshot.startedAt,endedAt:snapshot.endedAt,participantNames:[...new Set(snapshot.utterances.map(u=>u.speaker).filter(Boolean))] },briefRevision:snapshot.briefRevision, generatedAt: Date.now(), approvedAt: null, approvedBy: null,humanReviewedAt:null,humanReviewedBy:null,
           transcriptRefs: snapshot.utterances.filter(u => u.final && u.source !== 'ai').map(u => ({ utteranceId: u.id, revision: u.revision })),
           contextRevision: snapshot.revision, kind: summary ? 'summary' : 'minutes' };
         r.c.state.minutesHistory.push(version);
@@ -244,6 +246,18 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
             break;
           }
           case 'configure': r.c.configure(body); break;
+          case 'meeting_brief': {
+            let command=body;
+            if(body.voiceSource){
+              const q=body.voiceSource,u=r.c.state.utterances.find(u=>u.id===q.utteranceId);
+              if(r.c.state.status!=='recording'||!r.c.state.inputHealthy||['stt','storage','connection'].some(k=>r.c.state.health[k]==='failed')||!/^\d{17,22}$/.test(q.userId||'')||!u?.final||u.source!=='discord'||u.revision!==q.revision||u.userId!==q.userId)throw new Error('現在の確定発言から本筋を指定してください。');
+              if(typeof q.alias!=='string'||q.alias.length>32||detectAddress(u.text,[q.alias]).question!==q.question)throw new Error('本筋の依頼本文が原発言と一致しません。');
+              command=briefCommand(q.question);if(!command)throw new Error('本筋への明示的な呼びかけが必要です。');
+              if(command.operation!=='read'&&q.userId!==r.c.state.ownerId&&body.controlAuthorized!==true)throw new Error('本筋の変更は開始した人か管理担当者に依頼してください。');
+              command={...command,actorId:q.userId,evidence:{utteranceId:u.id,revision:u.revision}};
+            }else if(r.c.state.guildId&&(body.source!=='start'||r.c.state.status!=='created'||body.actorId!==r.c.state.ownerId||body.operation!=='set'))throw new Error('開始時の指定か、声の明示依頼から本筋を設定してください。');
+            updateBrief(r.c,command);if(r.c.state.minutesHistory.some(v=>minutesStale(r.c.state,v)))r.c.state.minutesStatus='needs_review';break;
+          }
           case 'discard': r.c.discard(); break;
           case 'stop': r.c.stop('manual'); break;
           case 'decision': r.c.confirmDecision(body); if(r.c.state.minutesHistory.length)r.c.state.minutesStatus='needs_review'; break;
@@ -263,7 +277,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
         if (body.provider !== 'openai') throw new Error('MVPではOpenAIのモデルを選んでください。');
         if (body.mode !== undefined && !['live', 'reply', 'autonomous','voice_request'].includes(body.mode)) throw new Error('返答のモードが不正です。');
         if (body.trigger !== undefined && body.trigger !== 'auto') throw new Error('依頼の種類が不正です。');
-        if (body.trigger === 'auto' && (!canSpeak(r.c.state) || r.c.state.mode !== 'facilitator' || !r.c.state.autonomous || body.mode !== 'autonomous')) throw new Error('自律発言は停止中です。');
+        if (body.trigger === 'auto' && (!automaticSpeechAllowed(r.c.state) || !r.c.state.inputHealthy || ['stt','storage','connection'].some(k=>r.c.state.health[k]==='failed') || body.mode !== 'autonomous')) throw new Error('自律発言は停止中です。');
         if (!r.c.state.utterances.some(u => u.final)) throw new Error('確定した発言を追加してください。');
         r.pending?.abort.abort();
         if(body.mode==='voice_request'){const q=body.voiceRequest,u=r.c.state.utterances.find(u=>u.id===q?.utteranceId);if(!r.c.state.fixedOperation||!canSpeak(r.c.state)||!r.c.state.inputHealthy||['stt','storage','connection'].some(k=>r.c.state.health?.[k]==='failed')||!u?.final||u.source!=='discord'||u.revision!==q.revision||u.userId!==q.userId||typeof q.question!=='string'||q.question.length>12000)throw new Error('現在の確定発言からの呼びかけが必要です。');}
@@ -273,7 +287,9 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
         // モデル処理中も音声入力・停止操作を受け付ける。
         void (async () => {
           try {
-            const response = await modelAnalyze({ provider: body.provider, model: body.model, state: ticket.state, requestedReply: ticket.mode === 'reply' && body.trigger !== 'auto', autonomous: body.trigger === 'auto', onMemory: memory => { if (!r.c.state.contextMemory) r.c.state.contextMemory = []; if (!r.c.state.contextMemory.some(m => m.key === memory.key)) r.c.state.contextMemory.push(memory); save(r, 'context_memory'); }, onContextUsage: usage => { r.c.state.usage.push({ ...usage, kind: 'context_summary', at: Date.now() }); save(r, 'context_summary_usage'); }, signal: pending.abort.signal });
+            const command=ticket.mode==='voice_request'&&ticket.state.request.voiceRequest.briefOperation;
+            if(command&&briefCommand(ticket.state.request.voiceRequest.question)?.operation!==command)throw new Error('本筋の確認依頼が不正です。');
+            const response = command?{result:{action:'summary',text:briefAcknowledgement(ticket.state,command),reason:'参加者が明示した本筋の確認',evidence:[{utteranceId:ticket.state.request.voiceRequest.utteranceId,revision:ticket.state.request.voiceRequest.revision}],notes:[]},usage:{provider:'local',kind:'brief_confirmation',estimatedUsd:0}}:await modelAnalyze({ provider: body.provider, model: body.model, state: ticket.state, requestedReply: ticket.mode === 'reply' && body.trigger !== 'auto', autonomous: body.trigger === 'auto', onMemory: memory => { if (!r.c.state.contextMemory) r.c.state.contextMemory = []; if (!r.c.state.contextMemory.some(m => m.key === memory.key)) r.c.state.contextMemory.push(memory); save(r, 'context_memory'); }, onContextUsage: usage => { r.c.state.usage.push({ ...usage, kind: 'context_summary', at: Date.now() }); save(r, 'context_summary_usage'); }, signal: pending.abort.signal });
             r.c.state.usage.push({ ...response.usage, outcome: 'received', at: Date.now() });
             const accepted = r.c.accept(response.result, ticket);
             if (accepted && r.c.state.revision === ticket.revision) r.c.state.notes = { revision: ticket.revision, items: response.result.notes };

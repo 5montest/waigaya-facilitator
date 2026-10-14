@@ -12,7 +12,7 @@ export function initialMeeting(clock = Date.now) {
   return { mode: 'assistant', status: 'created', quiet: false, startedAt: null, endedAt: null, endReason: null,
     guildId: null, voiceChannelId: null, ownerId: null, participantIds: [], outputChannelId: null, outputRevision:0,destinationHistory:[],
     emptySince: null, autoFinishAfterMs: 180000, recordingNoticeSentAt: null,
-    minutesStatus: 'none', minutesVersion: 0, minutesHistory: [], publications: [], voiceRequests: [], fixedOperation:false, publicationPolicy:'human_review', completionJob:null, gaps: [], health: {}, lastError: null };
+    minutesStatus: 'none', minutesVersion: 0, minutesHistory: [], publications: [], voiceRequests: [], meetingBrief:null,briefRevision:0,briefHistory:[],focusGuard:false,fixedOperation:false, publicationPolicy:'human_review', completionJob:null, gaps: [], health: {}, lastError: null };
 }
 export function transition(state, action, now = Date.now(), details = {}) {
   const active = activeStatuses.includes(state.status);

@@ -3,6 +3,7 @@ import { publicationLabels } from '../publication.js';
 export function fixedStatus(state,now=Date.now()) {
  const version=state.minutesHistory.at(-1),publication=state.publications.findLast(p=>p.version===version?.version&&p.channelId===state.outputChannelId);
  const lines=[`会議：${state.topic}`,`状態：${statusLabels[state.status]||'状態を確認してください'}（約${Math.max(0,Math.floor(((state.endedAt||now)-(state.startedAt||now))/60000))}分）`];
+ if(state.meetingBrief)lines.push(`本筋：${state.meetingBrief.text.slice(0,300)}${state.meetingBrief.text.length>300?'…':''}${state.meetingBrief.needsReview?'（原発言が訂正されています。再指定してください）':''}`,`脱線の声かけ：${state.focusGuard&&!state.meetingBrief.needsReview&&state.mode!=='minutes'&&!state.quiet?'有効':'停止'}`);
  if(state.status==='recording')lines.push(state.mode==='minutes'||state.quiet?'AI音声は停止中です。記録は続けています。':state.request?.status==='thinking'?'音声回答を考えています。':state.request?.status==='ready'&&state.reply?.action!=='hold'?'人の発話が終わるのを待っています。':'ワイガヤと呼ぶと音声で答えます。');
  if(state.status==='paused')lines.push('記録を止めています。再開は /waigaya resume。');
  if(state.status==='empty_grace')lines.push('新しい音声は送信していません。3分以内の復帰を待っています。');

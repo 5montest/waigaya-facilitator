@@ -63,6 +63,7 @@ export class Controller {
     this.invalidate({ preserveReply,reason:(!old||!old.final)&&final&&isMeaningful(text)?'new_utterance':'utterance_changed' });
     const next = { id, text, speaker, final, startMs, endMs, source: old?.source ?? source, userId:old?.userId??userId, revision: (old?.revision ?? 0) + 1, receivedAt: old?.receivedAt ?? this.clock() };
     if (old) Object.assign(old, next); else this.state.utterances.push(next);
+    if(this.state.meetingBrief?.evidence?.utteranceId===id&&this.state.meetingBrief.evidence.revision!==next.revision){this.state.meetingBrief.needsReview=true;this.state.briefRevision++;}
     this.state.utterances.sort((a, b) => (a.startMs ?? a.receivedAt) - (b.startMs ?? b.receivedAt));
     return next;
   }

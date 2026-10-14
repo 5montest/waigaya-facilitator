@@ -13,7 +13,7 @@ export class MeetingBridge extends EventEmitter {
     if(data?.id && !data.ack && this.state && data.id===this.state.id && (data.sequence??0)>=(this.state.sequence??0)){this.state=data;this.emit('state',data);}return data;
   }
   get path(){return `/api/sessions/${this.state.id}`;}
-  async open(topic,{sessionId,mode='minutes',discord}={}){
+  async open(topic,{sessionId,mode='minutes',purpose,discord}={}){
     this.config=await this.api('/api/config');if(!this.config.audio.configured)throw new Error('会議サーバーのOpenAIキーが未設定です。');
     if(sessionId){
       if(!/^[0-9a-f-]{36}$/.test(sessionId))throw new Error('再開する会議IDが不正です。');
@@ -21,6 +21,7 @@ export class MeetingBridge extends EventEmitter {
     }else{
       this.state=await this.api('/api/sessions',{mode,...(discord?{discord}:{})});
       this.state=await this.api(this.path+'/events',{type:'configure',topic,phase:'organize',mode});
+      if(purpose)this.state=await this.api(this.path+'/events',{type:'meeting_brief',operation:'set',text:purpose,source:'start',actorId:discord?.ownerId||'operator'});
     }
     if (['completed','finalizing','finalize_failed'].includes(this.state.status)) throw new Error('終了済みの会議は再開できません。');
     if (this.state.status === 'created') this.state = await this.api(this.path+'/events',{type:'lifecycle',action:'start'});

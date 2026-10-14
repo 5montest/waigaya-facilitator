@@ -27,6 +27,8 @@ export function shortMinutes(state,version) {
   const start=meetingTime(m.startedAt),end=meetingTime(m.endedAt),sameDay=start!=='不明'&&end!=='不明'&&start.slice(0,10)===end.slice(0,10);
   const participants=(m.participantNames||[]).map(name=>String(name).replace(/\s+\(\d{17,22}\)$/,''));
   const lines=[`**議事録（${version.approvedAt?'確認済み':'AI生成・未確認'}）｜版${version.version}**`,`${start}〜${sameDay?end.slice(11):end}（日本時間）`,`議題：${previewText(m.topic||state.topic,120)}`,`参加者：${previewText(participants.join('、')||'不明',160)}`];
+  if(m.meetingBrief)lines.push(`本筋：${previewText(m.meetingBrief.text,180)}${m.meetingBrief.needsReview?'（要再確認）':''}`);
+  if(m.briefNeedsReview)lines.push('本筋：要再確認（指定した発言が訂正されています）');
   for(const [label,items] of [['概要',d.overview],['確認済み決定',version.confirmedDecisions||[]],['決定候補（未確認）',d.decisionCandidates],['未決事項',d.openIssues],['アクション（候補）',d.actionItems]]){
     if(!items.length)continue;
     const block=`\n**${label}**\n`+items.slice(0,2).map(i=>'- '+previewText(i.text,130)+(label.startsWith('アクション')?`\n  担当：${previewText(i.owner||'不明',40)}／期限：${previewText(i.deadline||'不明',40)}`:'')).join('\n');
