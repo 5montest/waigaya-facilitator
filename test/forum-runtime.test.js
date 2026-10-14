@@ -70,7 +70,7 @@ test('模擬Discord: モード選択は一度だけ開始し、他人・期限�
 });
 test('模擬Discord: 結果不明の投稿URLを管理者が検証して復旧し、一般ユーザーは照合できない',async()=>{
  const r=await fixture();try{const state=await r.create();let response=await r.dispatch({kind:'button',customId:`wg:review:${state.id}:1:${ownerId}`});const save=r.store.save.bind(r.store);let fail=true;r.store.save=(s,kind,...rest)=>{if(kind==='publication'&&fail){fail=false;throw new Error('DB failed');}return save(s,kind,...rest);};await r.dispatch({kind:'button',customId:response.components[0].components[0].data.custom_id});
-  const thread=await r.guild.channels.fetch(threadId);thread.messages={fetch:async()=>({id:threadId,author:{id:botId},content:r.created[0].message.content,url:`https://discord.com/channels/${guildId}/${threadId}/${threadId}`})};
+  const thread=await r.guild.channels.fetch(threadId);thread.messages={fetch:async()=>({id:threadId,author:{id:botId},content:r.created[0].message.content,attachments:new Collection(r.created[0].message.files.map((file,index)=>[String(index),{name:file.name,description:file.description}])),url:`https://discord.com/channels/${guildId}/${threadId}/${threadId}`})};
   response=await r.dispatch({action:'reconcile',strings:{action:'link',url:`https://discord.com/channels/${guildId}/${threadId}/${threadId}`}});assert.match(response.content,/管理者/);
   response=await r.dispatch({action:'reconcile',admin:true,strings:{action:'link',url:`https://discord.com/channels/${guildId}/${threadId}/${threadId}`}});assert.match(response.content,/復旧しました/);assert.equal((await r.get()).publications[0].status,'published');assert.equal(r.created.length,1);
  }finally{await r.close();}

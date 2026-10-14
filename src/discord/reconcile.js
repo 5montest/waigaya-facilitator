@@ -1,6 +1,6 @@
 import { PermissionFlagsBits,ChannelType } from 'discord.js';
 import { UserError } from '../errors.js';
-import { marker } from './minutes-publication.js';
+import { marker,hasPublicationMarker } from './minutes-publication.js';
 
 export function requireAdministrator(interaction) {
   if(!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild))throw new UserError('保存先の既定設定・送信結果の照合はサーバー管理者だけが操作できます。');
@@ -15,7 +15,7 @@ export async function inspectPublication({state,publication,channel,bot,maxPages
     let before,done=false;
     for(let i=0;i<maxPages;i++){
       const batch=await target.messages.fetch({limit:100,...(before?{before}:{})});
-      for(const m of batch.values())if(m.author?.id===botId&&markers.some(key=>m.content?.includes(key)))matches.push({messageId:m.id,threadId:threadId||(m.hasThread?m.id:null),starterMessageId:publication.starterMessageId||(threadId||m.id),url:m.url});
+      for(const m of batch.values())if(m.author?.id===botId&&hasPublicationMarker(m,markers))matches.push({messageId:m.id,threadId:threadId||(m.hasThread?m.id:null),starterMessageId:publication.starterMessageId||(threadId||m.id),url:m.url});
       if(batch.size<100||[...batch.values()].some(m=>m.createdTimestamp<Math.min(publication.attemptedAt,...(publication.attempts||[]).map(a=>a.attemptedAt))-5000)){done=true;break;}
       before=batch.last().id;
     }
@@ -44,7 +44,7 @@ export async function verifyMessageLink({state,publication,guild,bot,url,fetchIm
   const message=await target.messages.fetch(match[3]);
   if(message.author?.id!==(bot.id||bot.user?.id))throw new UserError('このBotが投稿した議事録だけを照合できます。');
   const version=state.minutesHistory.find(v=>v.version===publication.version);
-  let valid=[publication,...(publication.attempts||[])].some(p=>message.content?.includes(marker(state,version,p)));
+  let valid=hasPublicationMarker(message,[publication,...(publication.attempts||[])].map(p=>marker(state,version,p)));
   if(!valid&&publication.legacyMarker){
     const attachment=[...message.attachments.values()].find(a=>a.name===`minutes-v${publication.version}.md`);
     if(attachment&&attachment.size<=8*1024*1024){const cdn=new URL(attachment.url);if(cdn.protocol==='https:'&&['cdn.discordapp.com','media.discordapp.net'].includes(cdn.hostname)){

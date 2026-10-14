@@ -12,20 +12,29 @@ export function splitAttachments(text,name,limit=8*1024*1024) {
   return parts.map((part,i)=>new AttachmentBuilder(part,{name:parts.length===1?name:name.replace(/\.[^.]+$/,'')+`.part${String(i+1).padStart(2,'0')}${name.match(/\.[^.]+$/)?.[0]||'.md'}`}));
 }
 export const marker = (state,version,reservation) => `waigaya:${state.id}:v${version.version}:${(reservation.markdownHash||digest(publicationMarkdown(state,version))).slice(0,16)}:r${reservation.reservationId}`;
+// Attachment descriptions keep delivery identifiers out of the visible meeting text.
+// Older publications carried the same identifier in their message body.
+export const hasPublicationMarker = (message,keys) => keys.some(key=>message.content?.includes(key)||[...(message.attachments?.values()||[])].some(a=>a.description===key));
 export function forumTitle(state,version) {
   const m=version.metadata||state;
   const date=m.startedAt?new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(m.startedAt)):'日付不明';
   return Array.from(`${date}｜${String(m.topic||state.topic).replace(/[\r\n\t]/g,' ').replace(/@/g,'＠')}`).slice(0,100).join('');
 }
-const meetingTime=at=>at==null?'不明':new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(at));
+const meetingTime=at=>at==null||!Number.isFinite(new Date(at).getTime())?'不明':new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(at)).replaceAll('-','/');
+const previewText=(text,limit)=>safeText(Array.from(String(text??'')).length>limit?Array.from(String(text)).slice(0,limit).join('')+'…':text);
 export function shortMinutes(state,version) {
   const m=version.metadata||state,d=version.document;
-  const lines=[version.approvedAt?'議事録（確認済み）':'議事録（AI生成・未確認）',version.approvedAt?'操作担当者の確認であり、参加者全員の合意を保証しません。':'AIによる下書きです。人の確認・参加者の合意を示すものではありません。',`議題：${safeText(m.topic||state.topic)}`,`日時（日本時間）：${meetingTime(m.startedAt)}〜${meetingTime(m.endedAt)}`,`出席者（記録で確認）：${safeText((m.participantNames||[]).join('、')||'不明')}`];
+  const start=meetingTime(m.startedAt),end=meetingTime(m.endedAt),sameDay=start!=='不明'&&end!=='不明'&&start.slice(0,10)===end.slice(0,10);
+  const participants=(m.participantNames||[]).map(name=>String(name).replace(/\s+\(\d{17,22}\)$/,''));
+  const lines=[`**議事録（${version.approvedAt?'確認済み':'AI生成・未確認'}）｜版${version.version}**`,`${start}〜${sameDay?end.slice(11):end}（日本時間）`,`議題：${previewText(m.topic||state.topic,120)}`,`参加者：${previewText(participants.join('、')||'不明',160)}`];
   for(const [label,items] of [['概要',d.overview],['確認済み決定',version.confirmedDecisions||[]],['決定候補（未確認）',d.decisionCandidates],['未決事項',d.openIssues],['アクション（候補）',d.actionItems]]){
-    lines.push(label+': '+(items.length?items.slice(0,2).map(i=>safeText(i.text).slice(0,130)+(label.startsWith('アクション')?`／担当:${safeText(i.owner||'不明')}／期限:${safeText(i.deadline||'不明')}`:'')).join('・'):'該当なし'));
+    if(!items.length)continue;
+    const block=`\n**${label}**\n`+items.slice(0,2).map(i=>'- '+previewText(i.text,130)+(label.startsWith('アクション')?`\n  担当：${previewText(i.owner||'不明',40)}／期限：${previewText(i.deadline||'不明',40)}`:'')).join('\n');
+    if(lines.join('\n').length+block.length<=1450)lines.push(block);
   }
-  lines.push('詳細・根拠・記録欠損の注記は添付の議事録Markdownに記載。長い場合は番号順に分割添付します。');
-  return lines.join('\n').slice(0,1650);
+  if(!version.confirmedDecisions?.length)lines.push('\n確認済みの決定はありません。');
+  lines.push('\n'+(version.approvedAt?'操作担当者が確認した版です。参加者全員の合意を保証するものではありません。':'AIによる下書きです。内容・参加者の合意は未確認です。'),'詳細・根拠・記録欠損の注記は添付のMarkdownをご覧ください。');
+  return lines.join('\n');
 }
 export function resolveTags(channel,bot,{reviewed=true}={}) {
   if(channel.type!==ChannelType.GuildForum)return [];
@@ -70,7 +79,8 @@ export class DiscordMinutesPublisher {
     const p=reserved.publications.find(p=>p.version===version.version&&p.channelId===channel.id);
     const frozenVersion=reserved.minutesHistory.find(v=>v.version===p.version);
     prepared.files=splitAttachments(p.publicationMarkdown||p.approvedMarkdown,`minutes-v${p.version}.md`,Math.min(attachmentLimit||8*1024*1024,8*1024*1024));prepared.content=shortMinutes(reserved,frozenVersion);
-    const message={content:(p.starterMessageId?'議事録を更新しました：v'+version.version+'\n':'')+prepared.content+'\n\n'+marker(state,version,p),files:prepared.files,allowedMentions:{parse:[]},flags:MessageFlags.SuppressEmbeds};
+    prepared.files[0].setDescription(marker(state,version,p));
+    const message={content:(p.starterMessageId?'訂正版を追加しました。\n\n':'')+prepared.content,files:prepared.files,allowedMentions:{parse:[]},flags:MessageFlags.SuppressEmbeds};
     let delivery;
     try {
       // Recheck immediately before side effects; never switch to another channel.

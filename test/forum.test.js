@@ -27,6 +27,7 @@ const send=(r,publisher=new DiscordMinutesPublisher())=>publisher.publish({state
 test('フォーラムは確認済みMarkdownと短い本文を1回だけ作り、版2は同じ投稿へ追記する',async()=>{
  const r=fixture(),publisher=new DiscordMinutesPublisher();const original=r.version.approvedMarkdown;
  await Promise.all([send(r,publisher),send(r,publisher)]);assert.equal(r.created.length,1);assert.equal(r.created[0].name,'2026-10-09｜ロボット開発 ＠everyone');assert.equal(r.created[0].message.files[0].name,'minutes-v1.md');assert.equal(r.created[0].message.files[0].attachment.toString(),original);assert.deepEqual(r.created[0].message.allowedMentions,{parse:[]});assert.ok(!r.created[0].message.content.includes('@everyone'));assert.ok(!r.created[0].message.content.includes('<@&'));
+ assert.ok(!r.created[0].message.content.includes('waigaya:'));assert.ok(!r.created[0].message.content.includes(r.state.id));assert.equal(r.created[0].message.files[0].description,marker(r.state,r.version,r.state.publications[0]));
  const version={...structuredClone(r.version),version:2,approvedAt:null,approvedMarkdown:null};r.state.minutesHistory.push(version);r.state.minutesVersion=2;approveVersion(r.state,version,ownerId);await send(r,publisher);
  assert.equal(r.created.length,1);assert.equal(r.sent.length,1);assert.equal(r.sent[0].files[0].name,'minutes-v2.md');assert.equal(r.state.publications[1].threadId,threadId);assert.equal(r.state.minutesHistory[0].approvedMarkdown,original);assert.match(r.state.publications[1].url,/discord.com\/channels/);
 });
@@ -91,5 +92,28 @@ test('投稿URL照合はギルド・投稿先・Bot作者・識別子をすべ�
 });
 
 test('フォーラム本文の日付は日本時間と明示し、UTCの日付境界でもタイトルと一致する',()=>{
- const {state,version}=fixture();version.metadata={topic:'会議',startedAt:Date.parse('2026-10-13T22:00:00Z'),endedAt:Date.parse('2026-10-13T23:00:00Z'),participantNames:[]};assert.match(shortMinutes(state,version),/日時（日本時間）：2026-10-14 07:00〜2026-10-14 08:00/);assert.match(forumTitle(state,version),/^2026-10-14/);
+ const {state,version}=fixture();version.metadata={topic:'会議',startedAt:Date.parse('2026-10-13T22:00:00Z'),endedAt:Date.parse('2026-10-13T23:00:00Z'),participantNames:[]};assert.match(shortMinutes(state,version),/2026\/10\/14 07:00〜08:00（日本時間）/);assert.match(forumTitle(state,version),/^2026-10-14/);
+ version.metadata.endedAt=Date.parse('2026-10-14T16:00:00Z');assert.match(shortMinutes(state,version),/2026\/10\/14 07:00〜2026\/10\/15 01:00（日本時間）/);
+ version.metadata.endedAt=null;assert.match(shortMinutes(state,version),/2026\/10\/14 07:00〜不明/);
+});
+
+test('本文は空の論点を省き、未確認・決定なしと概要の区切りを保つ',()=>{
+ const {state,version}=fixture({approved:false});version.metadata.participantNames=['参加者A (323456789012345678)'];const content=shortMinutes(state,version);
+ assert.match(content,/議事録（AI生成・未確認）｜版1/);assert.match(content,/\n\n\*\*概要\*\*\n- /);
+ assert.match(content,/参加者：参加者A\n/);assert.ok(!content.includes('323456789012345678'));
+ assert.match(content,/確認済みの決定はありません/);assert.match(content,/内容・参加者の合意は未確認/);
+ assert.ok(!content.includes('該当なし'));assert.ok(!content.includes('**未決事項**'));assert.ok(!content.includes('**アクション（候補）**'));
+});
+
+test('本文にIDを出さず添付の管理情報で送信後DB障害を照合し、別予約の添付は拒否する',async()=>{
+ const r=fixture(),api=r.api;r.api=async body=>{if(body.action==='publication')throw new Error('DB failure');return api(body);};
+ await assert.rejects(()=>send(r),/送信は完了.*保存/);
+ const payload=r.created[0].message,p=r.state.publications[0];
+ const message={id:threadId,author:{id:botId},content:payload.content,attachments:new Collection([['a',{name:payload.files[0].name,description:payload.files[0].toJSON().description}]]),createdTimestamp:Date.now(),url:`https://discord.com/channels/${guildId}/${threadId}/${threadId}`};
+ r.messages.set(message.id,message);r.thread.messages.fetch=async options=>typeof options==='string'?message:r.messages;
+ assert.equal((await inspectPublication({state:r.state,publication:p,channel:r.channel,bot})).matches.length,1);
+ assert.equal((await verifyMessageLink({state:r.state,publication:p,guild:r.channel.guild,bot,url:message.url})).messageId,threadId);
+ message.attachments.get('a').description=payload.files[0].description.replace(p.reservationId,'other');
+ assert.equal((await inspectPublication({state:r.state,publication:p,channel:r.channel,bot})).matches.length,0);
+ await assert.rejects(()=>verifyMessageLink({state:r.state,publication:p,guild:r.channel.guild,bot,url:message.url}),/識別/);
 });
