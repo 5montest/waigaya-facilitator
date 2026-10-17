@@ -10,7 +10,7 @@ export function fixedStatus(state,now=Date.now()) {
  lines.push(`議事録：${minutesLabels[state.minutesStatus]||'未作成'}${version?`／版${version.version}（${version.approvedAt?'人が確認済み':'AI生成・未確認'}）`:''}`);
  if(publication){lines.push(`投稿：${publicationLabels[publication.status]||'確認が必要'}`);if(publication.url)lines.push(`<${publication.url}>`);}
  else if(state.completionJob?.status==='failed')lines.push('自動処理に失敗しました。原本の状態を /waigaya minutes で確認してください。');
- else if(state.completionJob?.status==='skipped_empty')lines.push('発言がないため投稿を省略しました。');
+ else if(state.completionJob?.status==='skipped_empty')lines.push('文字起こしが0件のため投稿を省略しました。話していた場合は管理者へ連絡してください。');
  else lines.push(state.publicationPolicy==='auto_publish_ai_draft'?`終了後、<#${state.outputChannelId}> へ自動投稿します。`:'議事録は非公開保存します。');
  const failures=Object.entries(state.health).filter(([,v])=>v==='failed').map(([k])=>healthLabels[k]||'接続');
  if(failures.length)lines.push(`障害：${failures.join('、')}`);

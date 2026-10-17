@@ -32,7 +32,7 @@ test('固定運用: 人の後日確認は別版に保存して追記し、元の
  }finally{await r.close();}
 });
 test('固定運用: 空会議は親投稿を作らず、STT全欠損は正常な議事録と表示しない',async()=>{
- const r=await fixedFixture();try{await r.action('start');await r.action('end');const s=await r.complete();assert.equal(s.completionJob.status,'skipped_empty');assert.equal(r.created.length,0);assert.ok(r.dms.some(n=>n.content.includes('無発言')));}finally{await r.close();}
+ const r=await fixedFixture();try{await r.action('start');await r.action('end');const s=await r.complete();assert.equal(s.completionJob.status,'skipped_empty');assert.equal(r.created.length,0);assert.ok(r.dms.some(n=>n.content.includes('文字起こしが0件')));assert.ok(!r.dms.some(n=>n.content.includes('無発言')));const status=await r.action('status');assert.match(status.content,/文字起こしが0件/);}finally{await r.close();}
  const broken=await fixedFixture();try{await broken.action('start');broken.runtime.meeting.bridge.state.health.stt='failed';await broken.runtime.meeting.bridge.enqueue({type:'health',kind:'stt',healthy:false,gap:{startedAt:Date.now(),endedAt:Date.now()}});await broken.action('end');const s=await broken.complete();assert.equal(s.completionJob.status,'failed');assert.equal(s.completionJob.errorCategory,'recording_missing');assert.equal(broken.created.length,0);}finally{await broken.close();}
 });
 test('固定運用: Discord結果不明・LLM失敗でも退出し、原本を保持して機密本文なしに一度通知',async()=>{

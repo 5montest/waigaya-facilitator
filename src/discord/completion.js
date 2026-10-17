@@ -45,7 +45,7 @@ export class FixedCompletionWorker {
     }
     if(state.status!=='completed'||state.minutesStatus==='generating')return;
     const count=state.utterances.filter(u=>u.final&&u.source!=='ai').length;
-    if(!count){const broken=state.gaps?.some(g=>g.kind==='stt'||g.kind==='connection')||state.health.stt==='failed';await job({status:broken?'failed':'skipped_empty',phase:'empty',errorCategory:broken?'recording_missing':null});await this.notify(state,`会議ID：${state.id}\n${broken?'障害：音声記録の欠損。正常な議事録として投稿しません。':'無発言のため終了のみ記録し、フォーラム投稿は省略しました。'}`);return;}
+    if(!count){const broken=state.gaps?.some(g=>g.kind==='stt'||g.kind==='connection')||state.health.stt==='failed';await job({status:broken?'failed':'skipped_empty',phase:'empty',errorCategory:broken?'recording_missing':null});await this.notify(state,`会議ID：${state.id}\n${broken?'障害：音声記録の欠損。正常な議事録として投稿しません。':'文字起こしが0件のため、フォーラム投稿を省略しました。話していた場合は、管理者が音声受信・記録状態を確認してください。'}`);return;}
     if(version?.kind!=='minutes'||minutesStale(state,version)){await job({status:'pending',phase:'regeneration'});return;}
     if(!automaticPublicationAllowed(state)){await job({status:'completed',phase:'private'});return;}
     if(state.health.storage==='failed')return;

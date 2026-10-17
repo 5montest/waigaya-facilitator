@@ -26,7 +26,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
   if(!config.serviceToken) throw new Error('Bot・会議サーバー間の認証ファイルを設定してください。discord-setup.mdを参照してください。');
   const confirmations=new Confirmations(), publisher=new DiscordMinutesPublisher(), starts=new Map(), editorForms=new Map();
   const service=bridgeFactory(config.server,{serviceToken:config.serviceToken});
-  let meeting=null,starting=false,disposed=false,completionWorker=null,policyReady=false,beginning=false;
+  let meeting=null,startingBridge=null,starting=false,disposed=false,completionWorker=null,policyReady=false,beginning=false;
   const safe = content => ({content,allowedMentions:{parse:[]}});
   const humanCount=channel=>[...channel.members.values()].filter(m=>!m.user.bot).length;
   async function stateFor(id){return service.api('/api/sessions/'+id);}
@@ -106,6 +106,9 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
     starting=true;let bridge,connection,playback,current;
     try{
       bridge=bridgeFactory(config.server,{serviceToken:config.serviceToken});
+      // open() marks the session recording before Discord voice is ready. Keep
+      // that session owned so the recovery worker cannot pause a live start.
+      startingBridge=bridge;
       await bridge.open(topic,{sessionId,mode,purpose,discord:{guildId:channel.guild.id,voiceChannelId:channel.id,ownerId,outputChannelId,recordingNoticeSentAt:noticeAt,...(config.fixed?{autoPublicationNoticeAt:noticeAt}:{}),participantIds:[...channel.members.values()].filter(m=>!m.user.bot).map(m=>m.id)}});
       connection=join({guildId:channel.guild.id,channelId:channel.id,adapterCreator:channel.guild.voiceAdapterCreator,selfDeaf:false,selfMute:false});
       await ready(connection,VoiceConnectionStatus.Ready,20000);
@@ -171,7 +174,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
       if(bridge?.state?.id)await service.api(bridge.path+'/events',{type:'lifecycle',action:'pause'}).catch(()=>{});
       if(meeting===current)meeting=null;
       throw new Error('通話に接続できません。記録は停止しました。権限・接続を確認し /resume を使ってください。');
-    }finally{starting=false;}
+    }finally{startingBridge=null;starting=false;}
   }
   async function begin(interaction,channel,topic,mode,outputChannelId,purpose){
     if(beginning)throw new Error('開始処理中です。');beginning=true;try{
@@ -434,7 +437,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
   async function initializePolicy(guild){
     if(!config.fixed)return;
     await validateChannels(guild,config.fixed);await service.api(`/api/guilds/${config.guildId}/fixed-policy`,config.fixed);policyReady=true;
-    if(!completionWorker){completionWorker=new FixedCompletionWorker({service,client,policy:config.fixed,publisher,notify:notifyOwner,hasActiveSession:id=>meeting?.bridge.state.id===id});completionWorker.start();}
+    if(!completionWorker){completionWorker=new FixedCompletionWorker({service,client,policy:config.fixed,publisher,notify:notifyOwner,hasActiveSession:id=>meeting?.bridge.state.id===id||startingBridge?.state?.id===id});completionWorker.start();}
   }
   client.once(Events.ClientReady,async()=>{
     try {

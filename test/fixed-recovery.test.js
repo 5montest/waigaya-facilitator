@@ -7,7 +7,7 @@ import { Store } from '../src/store.js';
 import { Controller } from '../src/controller.js';
 import { emptyMinutes } from '../src/minutes.js';
 import { applyPublication } from '../src/publication.js';
-import { ids,fixedFixture } from './helpers/fixed.js';
+import { ids,fixedFixture,waitFor } from './helpers/fixed.js';
 function seed(kind){
  const root=mkdtempSync(join(tmpdir(),'waigaya-fixed-recovery-')),path=join(root,'records.sqlite'),store=new Store(path),now=Date.now();
  const c=new Controller({mode:'assistant',guildId:ids.guild,voiceChannelId:ids.vc,fixedVoiceChannelId:ids.vc,fixedMinutesForumId:ids.forum,ownerId:ids.owner,fixedOperation:true,publicationPolicy:'auto_publish_ai_draft',outputChannelId:ids.forum,autoPublicationNoticeAt:now-10000,recordingNoticeSentAt:now-10000,autoFinishAfterMs:1000},()=>now-10000);
@@ -22,6 +22,53 @@ function seed(kind){
  }
  store.save(c.state,'fixture_seed');store.close();return {root,path,id:c.state.id};
 }
+test('復旧走査: startのVC接続待ちを孤立会議と誤認せず、文字起こし・呼びかけ・投稿まで完了する',async()=>{
+ let r,whileConnecting;
+ r=await fixedFixture({ready:async()=>{await r.runtime.completionWorker.tick();whileConnecting=await r.state();}});
+ try{
+  await r.action('start');
+  assert.equal(whileConnecting.status,'recording');
+  assert.equal((await r.state()).status,'recording');
+  await r.emit('ワイガヤ、二つの案を整理して');
+  await waitFor(()=>r.tts.length===1);
+  await r.action('end');
+  const state=await r.complete();
+  assert.equal(state.utterances.length,1);
+  assert.equal(state.completionJob.status,'completed');
+  assert.equal(r.created.length,1);
+ }finally{await r.close();}
+});
+test('復旧走査: 明示resumeのVC接続待ちでも同じ会議を再停止しない',async()=>{
+ const data=seed('recording');let r,whileConnecting;
+ r=await fixedFixture({path:data.path,ready:async()=>{await r.runtime.completionWorker.tick();whileConnecting=await r.state();}});
+ try{
+  assert.equal((await r.state()).status,'paused');
+  await r.action('resume');
+  assert.equal(whileConnecting.status,'recording');
+  assert.equal((await r.state()).id,data.id);
+  assert.equal((await r.state()).status,'recording');
+  await r.emit('再開後も配線案の比較を続けます。');
+  assert.equal((await r.state()).utterances.length,2);
+ }finally{await r.close();rmSync(data.root,{recursive:true,force:true});}
+});
+test('復旧走査: VC接続失敗後は開始中の保護を解除し、録音せず保存済み会議を終了できる',async()=>{
+ const data=seed('recording'),r=await fixedFixture({path:data.path,ready:async()=>{throw new Error('simulated voice connection failure');}});
+ try{
+  await r.action('resume');
+  assert.equal(r.runtime.meeting,null);
+  assert.equal((await r.state()).status,'paused');
+  assert.equal(r.captures.length,0);
+  await r.membership(false);
+  await r.runtime.completionWorker.tick();
+  assert.equal((await r.state()).status,'empty_grace');
+  r.runtime.completionWorker.clock=()=>Date.now()+2000;
+  await r.runtime.completionWorker.tick();
+  const state=await r.complete();
+  assert.equal(state.id,data.id);
+  assert.equal(state.completionJob.status,'completed');
+  assert.equal(r.created.length,1);
+ }finally{await r.close();rmSync(data.root,{recursive:true,force:true});}
+});
 test('再起動: 全員退出の永続猶予から録音再開せず終了・生成・投稿を完了する',async()=>{
  const data=seed('empty'),r=await fixedFixture({path:data.path,voiceEmpty:true});try{const state=await r.complete();assert.equal(state.id,data.id);assert.equal(state.status,'completed');assert.equal(r.joins(),0);assert.equal(r.captures.length,0);assert.equal(r.created.length,1);assert.equal(state.completionJob.status,'completed');}finally{await r.close();rmSync(data.root,{recursive:true,force:true});}
 });
