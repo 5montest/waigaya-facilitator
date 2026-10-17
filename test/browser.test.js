@@ -67,11 +67,12 @@ test('実ブラウザの音声経路: Worklet入力・手動承認・端末停�
       window.audioTest = { started: 0, stopped: 0 };
       AudioContext.prototype.createBufferSource = function (...args) { const s = make.apply(this,args); const start = s.start.bind(s), stop = s.stop.bind(s); s.start = (...a) => { window.audioTest.started++; start(...a); }; s.stop = (...a) => { window.audioTest.stopped++; stop(...a); }; return s; };
     });
-    await page.goto(base); await sample(page);
+    await page.goto(base); await settings(page); await page.locator('#meetingMode').selectOption('assistant'); await page.locator('#configure').click(); await sample(page);
     await page.waitForFunction(() => document.querySelectorAll('.utterance').length === 3);
     await settings(page); await page.locator('#transcribe').uncheck(); await page.getByRole('button', { name: '保存', exact: true }).click();
     await page.getByRole('button', { name: '開始', exact: true }).click();
-    await page.getByText('マイク接続中', { exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelector('#audioStatus').textContent.includes('マイク接続中'));
+    assert.equal(await page.locator('#meetingMode').inputValue(),'assistant');
     await page.getByRole('button', { name: 'AIに聞く' }).click();
     await page.getByText('未決の条件を一つ確認しますか？', { exact: true }).waitFor();
     await page.getByRole('button', { name: '読み上げる' }).click();
@@ -84,7 +85,7 @@ test('実ブラウザの音声経路: Worklet入力・手動承認・端末停�
     assert.equal(aborted, true);
     synthesis.onChunk(Buffer.alloc(48000)); synthesis.onDone();
     await page.evaluate(() => new Promise(done => setTimeout(done,100))); assert.equal((await page.evaluate(() => window.audioTest)).started, 1);
-    await page.getByRole('button', { name: '終了', exact: true }).click();
+    await page.getByRole('button', { name: '記録を一時停止', exact: true }).click();
     await page.getByText('録音を保存', { exact: true }).waitFor(); assert.deepEqual(errors, []);
   } finally {
     await browser?.close(); await app.close(); await unlink(wavPath);
@@ -112,7 +113,7 @@ test('開始だけで既定モデルの文字起こしを始め、終了して�
     await page.getByRole('button',{name:'開始',exact:true}).click();
     await page.getByText('開始だけで記録します。',{exact:true}).waitFor();
     assert.equal(selectedModel,'gpt-transcribe');
-    await page.getByRole('button',{name:'終了',exact:true}).click();
+    await page.getByRole('button',{name:'記録を一時停止',exact:true}).click();
     await page.getByRole('link',{name:'録音を保存',exact:true}).waitFor();
     await page.getByRole('button',{name:'メニュー',exact:true}).click();
     await page.getByRole('button',{name:'新しい会議',exact:true}).click();

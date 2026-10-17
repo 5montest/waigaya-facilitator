@@ -5,6 +5,7 @@ node_modules/
 !.env.discord.example
 data/
 results/
+backups/
 *.pem
 seacret/
 secrets/

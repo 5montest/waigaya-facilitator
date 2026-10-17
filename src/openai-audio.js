@@ -41,20 +41,21 @@ export class TranscriptAssembler {
   }
 }
 
-export function transcriptionConfig(model) {
+export function transcriptionConfig(model,{prompt}={}) {
   if (!sttModels.some(m => m.model === model)) throw new Error('対応していない文字起こしモデルです。');
   const transcription = model === 'gpt-realtime-whisper' ? { model, language: 'ja', delay: 'medium' } : { model, languages: ['ja'] };
+  if(prompt&&model!=='gpt-realtime-whisper'){if(typeof prompt!=='string'||prompt.length>1000)throw new Error('文字起こしの補助情報が長すぎます。');transcription.prompt=prompt;}
   return { type: 'session.update', session: { type: 'transcription', audio: { input: { format: { type: 'audio/pcm', rate: 24000 }, transcription, turn_detection: null } } } };
 }
 
-export function connectStt({ emit, onReady, onError, onClose, onUsage = () => {}, model = defaultSttModel, WebSocketImpl = WebSocket }) {
-  const config = transcriptionConfig(model);
+export function connectStt({ emit, onReady, onError, onClose, onUsage = () => {}, model = defaultSttModel, prompt, WebSocketImpl = WebSocket }) {
+  const config = transcriptionConfig(model,{prompt});
   const assembler = new TranscriptAssembler(emit);
   const ws = new WebSocketImpl('wss://api.openai.com/v1/realtime?intent=transcription', { headers: { Authorization: `Bearer ${keyFor('openai')}` }, handshakeTimeout: 10000 });
-  let ready = false, closing = false, failed = false, frames = 0, boundary = 0, pendingBytes = 0, hasSpeech = false, active = false, committedMs = 0;
+  let ready = false, closing = false, cancelled = false, failed = false, frames = 0, boundary = 0, pendingBytes = 0, hasSpeech = false, active = false, committedMs = 0;
   const inFlight = new Set();
   let closeTimer;
-  const fail = message => { if (!failed && !closing) { failed = true; onError(new Error(message)); ws.terminate(); } };
+  const fail = message => { if (!failed && !cancelled) { failed = true; onError(new Error(message)); ws.terminate(); } };
   const setupTimer = setTimeout(() => fail('OpenAI文字起こしの設定がタイムアウトしました。'), 12000);
   function send(event) { ws.send(JSON.stringify(event)); }
   function commit() {
@@ -72,7 +73,7 @@ export function connectStt({ emit, onReady, onError, onClose, onUsage = () => {}
   }
   ws.on('open', () => send(config));
   ws.on('message', data => {
-    if (failed) return;
+    if (failed || cancelled) return;
     try {
       const event = JSON.parse(data.toString());
       if (event.type === 'error' || event.type === 'conversation.item.input_audio_transcription.failed') { fail('OpenAI文字起こしに失敗しました。モデルの利用権限・残高を確認してください。'); return; }
@@ -86,6 +87,9 @@ export function connectStt({ emit, onReady, onError, onClose, onUsage = () => {}
   ws.on('error', () => fail('OpenAI文字起こしへ接続できません。'));
   ws.on('close', () => {
     clearTimeout(setupTimer); clearTimeout(closeTimer);
+    if(!failed&&!cancelled&&(!closing||assembler.pending.length>0||inFlight.size>0)){
+      failed=true;onError(new Error('音声認識が確定前に切断されました。記録に欠損の可能性があります。'));
+    }
     const uploadedAudioSeconds = frames / 24000;
     onUsage({ provider: 'openai', kind: 'stt', model, uploadedAudioSeconds, committedAudioSeconds: committedMs / 1000,
       estimatedUsd: uploadedAudioSeconds / 60 * sttModels.find(m => m.model === model).usdPerMinute,
@@ -108,10 +112,10 @@ export function connectStt({ emit, onReady, onError, onClose, onUsage = () => {}
       if (closing) return;
       if (!ready) { closing = true; ws.terminate(); return; }
       active = false; commit(); closing = true;
-      closeTimer = setTimeout(() => { onError(new Error('最後の文字起こしが時間内に確定しませんでした。')); ws.terminate(); }, 10000);
+      closeTimer = setTimeout(() => fail('最後の文字起こしが時間内に確定しませんでした。'), 10000);
       finishIfDone();
     },
-    abort() { closing = true; ws.terminate(); },
+    abort() { cancelled = true; closing = true; ws.terminate(); },
   };
 }
 

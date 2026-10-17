@@ -48,3 +48,14 @@ test('長い識別番号や時刻を含む多数の発言を欠落させず圧�
     assert.equal(response.result.evidence[0].utteranceId,longState.utterances[179].id);assert.equal(response.result.notes[0].evidence[0].utteranceId,longState.utterances[0].id);
   }finally{if(old===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=old;}
 });
+
+test('長い会議は直近原文と根拠付き長期要約へ分け、既存要約を再利用する',async()=>{
+  const { boundedConversation }=await import('../src/models.js');
+  const { emptyMinutes }=await import('../src/minutes.js');
+  const long={topic:'長い会議',phase:'organize',utterances:Array.from({length:120},(_,i)=>({id:`original-${i}`,revision:1,final:true,text:'設定作業の条件を比較します。'.repeat(60),speaker:'A',receivedAt:i})),decisions:[],aiTurns:[]};
+  const seen=new Set(),memory=[];let calls=0;
+  const generate=async({input})=>{calls++;const result=emptyMinutes();if(input.utterances){input.utterances.forEach(u=>seen.add(u.id));const u=input.utterances[0];result.overview=[{text:'設定条件の比較',evidence:[{utteranceId:u.id,revision:1}]}];}else result.overview=[input.partialSummaries[0]];return{result,usage:{inputTokens:1}};};
+  const first=await boundedConversation(long,{generate,onMemory:m=>memory.push(m)}),input=JSON.parse(first.input);
+  assert.ok(first.input.length<90000);assert.ok(input.longTermContext.originalUtterancesSummarized>0);assert.equal(seen.size+input.utterances.length,120);const before=calls;
+  const second=await boundedConversation({...long,contextMemory:memory},{generate});assert.equal(calls,before);assert.equal(second.input,first.input);assert.equal(long.utterances.length,120);
+});
