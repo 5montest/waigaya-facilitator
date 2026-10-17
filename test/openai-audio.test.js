@@ -56,6 +56,24 @@ test('長い無音はクリアし、声がないまま確定処理へ送らな�
   const ws=FakeSocket.last; await new Promise(r=>queueMicrotask(r)); ws.message({type:'session.updated'}); connection.send(Buffer.alloc(96000)); connection.end();
   assert.ok(ws.sent.some(e=>e.type==='input_audio_buffer.clear')); assert.equal(ws.sent.filter(e=>e.type==='input_audio_buffer.commit').length,0);
 });
+test('STT終了の確定待ち中に切断したら未確定区間を正常終了と扱わない',async()=>{
+ const errors=[],usage=[];let closed=0;
+ const c=connectStt({emit:()=>{},onReady:()=>{},onError:e=>errors.push(e),onClose:()=>closed++,onUsage:u=>usage.push(u),WebSocketImpl:FakeSocket});
+ const ws=FakeSocket.last;await new Promise(r=>queueMicrotask(r));ws.message({type:'session.updated'});c.voice(true);c.send(Buffer.alloc(4800));c.voice(false);c.end();ws.close();
+ assert.equal(errors.length,1);assert.equal(closed,1);assert.equal(usage[0].outcome,'failed_billing_unknown');
+});
+test('STT終了待ち中のAPIエラーも障害として残し、生の応答は通知しない',async()=>{
+ const errors=[],usage=[];
+ const c=connectStt({emit:()=>{},onReady:()=>{},onError:e=>errors.push(e),onClose:()=>{},onUsage:u=>usage.push(u),WebSocketImpl:FakeSocket});
+ const ws=FakeSocket.last;await new Promise(r=>queueMicrotask(r));ws.message({type:'session.updated'});c.voice(true);c.send(Buffer.alloc(4800));c.end();ws.message({type:'error',error:{message:'private upstream data'}});
+ assert.equal(errors.length,1);assert.equal(ws.closed,true);assert.equal(usage[0].outcome,'failed_billing_unknown');assert.ok(!errors[0].message.includes('private'));
+});
+test('明示中断と予期しないSTT切断を区別し、遅延した確定結果を採用しない',async()=>{
+ const errors=[],output=[];
+ const c=connectStt({emit:u=>output.push(u),onReady:()=>{},onError:e=>errors.push(e),onClose:()=>{},WebSocketImpl:FakeSocket});
+ const ws=FakeSocket.last;await new Promise(r=>queueMicrotask(r));ws.message({type:'session.updated'});c.voice(true);c.send(Buffer.alloc(4800));c.abort();ws.message({type:'input_audio_buffer.committed',item_id:'late'});ws.message({type:'conversation.item.input_audio_transcription.completed',item_id:'late',transcript:'中断後の古い結果'});
+ assert.equal(errors.length,0);assert.equal(output.length,0);
+});
 test('Speech APIのネットワーク境界で分割された16bitサンプルを欠落させない', async () => {
   const chunks=[];
   await new Promise((done,reject)=>synthesize({text:'確認します。',onChunk:b=>chunks.push(b),onDone:done,onError:reject,fetchImpl:async(url,args)=>{

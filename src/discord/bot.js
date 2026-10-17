@@ -27,8 +27,10 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
   const confirmations=new Confirmations(), publisher=new DiscordMinutesPublisher(), starts=new Map(), editorForms=new Map();
   const service=bridgeFactory(config.server,{serviceToken:config.serviceToken});
   let meeting=null,startingBridge=null,starting=false,disposed=false,completionWorker=null,policyReady=false,beginning=false;
+  const ownsSession=id=>meeting?.bridge.state.id===id||startingBridge?.state?.id===id;
   const safe = content => ({content,allowedMentions:{parse:[]}});
   const humanCount=channel=>[...channel.members.values()].filter(m=>!m.user.bot).length;
+  const voiceUnavailable=voice=>Boolean(voice?.deaf||voice?.selfDeaf||voice?.serverDeaf);
   async function stateFor(id){return service.api('/api/sessions/'+id);}
   async function list(){return service.api('/api/sessions?guildId='+config.guildId);}
   async function access(state,interaction,{live=false}={}){
@@ -51,6 +53,13 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
   async function fault(current,kind,{gap=false,startedAt}={}){
     if(current.closed)return;
     await current.bridge.enqueue({type:'health',kind,healthy:false,...(gap?{gap:{startedAt:startedAt??current.lastCaptureAt??null,endedAt:Date.now()}}:{})}).catch(()=>{});
+  }
+  async function connectionLost(current,reason='connection_lost'){
+    if(current.closing||current.closed)return;
+    if(current.connectionFailure)return current.connectionFailure;
+    current.acceptAudio=false;current.addressing?.cancel();current.playback?.stop(true);
+    current.connectionFailure=fault(current,'connection',{gap:true}).finally(()=>finish(current,{reason,abort:true}));
+    return current.connectionFailure;
   }
   function stopCapture(current,{abort=false}={}){
     current.acceptAudio=false;
@@ -111,16 +120,19 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
       startingBridge=bridge;
       await bridge.open(topic,{sessionId,mode,purpose,discord:{guildId:channel.guild.id,voiceChannelId:channel.id,ownerId,outputChannelId,recordingNoticeSentAt:noticeAt,...(config.fixed?{autoPublicationNoticeAt:noticeAt}:{}),participantIds:[...channel.members.values()].filter(m=>!m.user.bot).map(m=>m.id)}});
       connection=join({guildId:channel.guild.id,channelId:channel.id,adapterCreator:channel.guild.voiceAdapterCreator,selfDeaf:false,selfMute:false});
-      await ready(connection,VoiceConnectionStatus.Ready,20000);
+      let rejectJoining;
+      const joinFailure=new Promise((_,reject)=>{rejectJoining=reject;});
+      connection.on('error',()=>{if(current)void connectionLost(current).catch(()=>{});else rejectJoining(new Error('通話接続中にエラーが発生しました。'));});
+      await Promise.race([Promise.resolve().then(()=>ready(connection,VoiceConnectionStatus.Ready,20000)),joinFailure]);
+      if(voiceUnavailable(channel.guild.voiceStates.cache.get(client.user.id)))throw new Error('Botの音声受信が無効になっています。');
       current={bridge,connection,channel,channelId:channel.id,captures:new Map(),sttFailures:new Map(),blockedUntil:new Map(),activeSpeakers:new Set(),transcriptions:new Set(),acceptAudio:true,closing:false,closed:false};
       playback=new DiscordPlayback(bridge,{onFailure:()=>{void fault(current,'tts');console.error('AI音声の再生に失敗しました。文字起こしは継続します。');}});
       current.playback=playback;current.addressing=config.fixed?new VoiceAddressing(current,{names:config.addressNames,
         canSetBrief:userId=>userId===bridge.state.ownerId||channel.members.get(userId)?.permissions?.has(PermissionFlagsBits.ManageGuild)||(config.controlRoleIds||[]).some(id=>channel.members.get(userId)?.roles?.cache?.has(id)),
         onBriefNotice:async text=>channel.send({...safe(safeText(text)),flags:MessageFlags.SuppressEmbeds}),
         onFailure:async()=>channel.send(safe('音声で回答できませんでした。記録は続いています。少し待って、もう一度ワイガヤと呼びかけてください。'))}):null;meeting=current;connection.subscribe(playback.player);
-      bridge.on('failure',()=>{void fault(current,'connection',{gap:true}).finally(()=>finish(current,{reason:'connection_lost',abort:true})).catch(()=>{});});
-      connection.on('error',()=>void finish(current,{reason:'connection_lost',abort:true}).catch(()=>{}));
-      connection.on(VoiceConnectionStatus.Disconnected,()=>void finish(current,{reason:'connection_lost',abort:true}).catch(()=>{}));
+      bridge.on('failure',()=>void connectionLost(current).catch(()=>{}));
+      connection.on(VoiceConnectionStatus.Disconnected,()=>void connectionLost(current).catch(()=>{}));
       const capture=userId=>{
         if(meeting!==current||current.closing||!current.acceptAudio||current.bridge.state.status!=='recording'||current.captures.has(userId)||Date.now()<(current.blockedUntil.get(userId)||0))return;
         const member=channel.members.get(userId);if(!member||member.user.bot)return;
@@ -130,36 +142,43 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
           else{current.activeSpeakers.delete(userId);if(current.activeSpeakers.size===0){playback.speech(false);bridge.send({type:'vad',active:false});}}
         });
         const startedAt=Date.now(),speaker=`${member.displayName.slice(0,50)} (${userId})`;current.lastCaptureAt=startedAt;
-        const opus=connection.receiver.subscribe(userId,{end:{behavior:EndBehaviorType.AfterSilence,duration:500}});
-        const decoder=new prism.opus.Decoder({rate:48000,channels:2,frameSize:960});let stt,failedOnce=false;
+        let opus,decoder,stt,failedOnce=false;
         const failed=kind=>{
           if(failedOnce||current.closed)return;failedOnce=true;
-          activity.end();opus.unpipe(decoder);opus.destroy();decoder.destroy();stt?.abort();current.captures.delete(userId);
+          activity.end();opus?.unpipe(decoder);opus?.destroy();decoder?.destroy();stt?.abort();current.captures.delete(userId);
           const failures=(current.sttFailures.get(userId)||0)+1;current.sttFailures.set(userId,failures);if(failures>=3)current.blockedUntil.set(userId,Date.now()+60000);
           void fault(current,kind,{gap:true,startedAt});
           // Only this stream fails; a future speaking event can reconnect it.
           const timer=setTimeout(()=>{if(meeting===current&&current.acceptAudio&&connection.receiver.speaking.users.has(userId))capture(userId);},failures>=3?60000:Math.min(30000,1000*2**(failures-1)));timer.unref();
         };
         try{
-          stt=transcribe({speaker,startedAt,emit:u=>{if(!current.closed){current.sttFailures.delete(userId);current.blockedUntil.delete(userId);if(bridge.state.health.stt==='failed')void bridge.enqueue({type:'health',kind:'stt',healthy:true}).catch(()=>{});void bridge.enqueue({type:'utterance',utterance:{...u,userId}}).then(()=>{const saved=bridge.state.utterances.find(v=>v.id===u.id);if(saved)current.addressing?.observe(saved,userId);}).catch(()=>{});}},
+          opus=connection.receiver.subscribe(userId,{end:{behavior:EndBehaviorType.AfterSilence,duration:500}});
+          decoder=new prism.opus.Decoder({rate:48000,channels:2,frameSize:960});
+          stt=transcribe({speaker,startedAt,emit:u=>{if(!current.closed){current.sttFailures.delete(userId);current.blockedUntil.delete(userId);if(current.sttFailures.size===0&&bridge.state.health.stt==='failed')void bridge.enqueue({type:'health',kind:'stt',healthy:true}).catch(()=>{});void bridge.enqueue({type:'utterance',utterance:{...u,userId}}).then(()=>{const saved=bridge.state.utterances.find(v=>v.id===u.id);if(saved)current.addressing?.observe(saved,userId);}).catch(()=>{});}},
             onUsage:usage=>{if(!current.closed)void bridge.enqueue({type:'audio_usage',usage}).catch(()=>{});},
             onClose:()=>current.transcriptions.delete(stt),onError:()=>failed('stt')});
-          current.transcriptions.add(stt);current.captures.set(userId,{opus,decoder,stt,activity});opus.pipe(decoder);
+          if(failedOnce){stt.abort();return;}
+          current.transcriptions.add(stt);current.captures.set(userId,{opus,decoder,stt,activity});
           decoder.on('data',buffer=>{if(!current.acceptAudio)return;try{activity.write(buffer);stt.write(buffer);}catch{failed('stt');}});
           decoder.on('end',()=>{activity.end();current.captures.delete(userId);stt.end();});
           opus.on('error',()=>failed('stt'));decoder.on('error',()=>failed('stt'));
+          opus.pipe(decoder);
         }catch{failed('stt');}
       };
       connection.receiver.speaking.on('start',capture);
+      current.captureActive=()=>{for(const userId of connection.receiver.speaking.users.keys())capture(userId);};
       current.facilitator=new AutonomousFacilitator(bridge,{available:()=>current.acceptAudio&&!current.asking&&!current.voiceAsking&&playback.epoch===null&&humanCount(channel)>0,onFailure:()=>console.error('自律検討に失敗しました。文字起こしは継続します。')});current.facilitator.start();
       current.grace=new EmptyGrace({graceMs:config.fixed?.emptyGraceMs||180000,
         onEmpty:async()=>{if(!['recording','paused'].includes(current.bridge.state.status))return;current.acceptAudio=false;current.addressing?.cancel();stopCapture(current);current.playback.stop(true);await bridge.api(bridge.path+'/events',{type:'lifecycle',action:'empty'});if(!config.fixed)await notifyOwner(bridge.state,'通話の参加者が0人です。新しい音声は記録していません。3分以内に戻れば同じ会議を続けます。');},
-        onReturn:async()=>{if(current.closing||current.bridge.state.status!=='empty_grace')return;const returned=await bridge.api(bridge.path+'/events',{type:'lifecycle',action:'returned'});if(returned.status==='recording'){await bridge.recording(true);current.acceptAudio=true;}},
+        onReturn:async()=>{if(current.closing||current.bridge.state.status!=='empty_grace')return;const returned=await bridge.api(bridge.path+'/events',{type:'lifecycle',action:'returned'});if(returned.status==='recording'){await bridge.recording(true);current.acceptAudio=true;current.captureActive();}},
         onFinish:()=>finish(current,{reason:'empty_timeout'}),onError:()=>console.error('退出猶予の処理に失敗しました。/waigaya status を確認してください。')});
       current.grace.start();
       current.onVoiceState=(old,next)=>{
         if(meeting!==current||current.closing)return;
-        if(next.id===client.user.id&&next.channelId!==current.channelId){void finish(current,{reason:'bot_moved',abort:true}).catch(()=>{});return;}
+        if(next.id===client.user.id){
+          if(next.channelId!==current.channelId){void connectionLost(current,'bot_moved').catch(()=>{});return;}
+          if(voiceUnavailable(next)){void connectionLost(current,'voice_input_disabled').catch(()=>{});return;}
+        }
         if(old.channelId===current.channelId||next.channelId===current.channelId){
           void current.grace.members(humanCount(channel));
           if(next.channelId===current.channelId&&old.channelId!==next.channelId&&!next.member?.user.bot){
@@ -168,10 +187,14 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
           }
         }
       };
-      client.on(Events.VoiceStateUpdate,current.onVoiceState);await current.grace.members(humanCount(channel));return current;
+      client.on(Events.VoiceStateUpdate,current.onVoiceState);await current.grace.members(humanCount(channel));current.captureActive();return current;
     }catch{
+      if(current)current.closing=true;
       current?.addressing?.close();current?.grace?.close();current?.facilitator?.close();playback?.close();connection?.destroy();await bridge?.close().catch(()=>{});
-      if(bridge?.state?.id)await service.api(bridge.path+'/events',{type:'lifecycle',action:'pause'}).catch(()=>{});
+      if(bridge?.state?.id){
+        await service.api(bridge.path+'/events',{type:'lifecycle',action:'pause'}).catch(()=>{});
+        await service.api(bridge.path+'/events',{type:'health',kind:'connection',healthy:false,gap:{startedAt:bridge.state.startedAt??null,endedAt:Date.now()}}).catch(()=>{});
+      }
       if(meeting===current)meeting=null;
       throw new Error('通話に接続できません。記録は停止しました。権限・接続を確認し /resume を使ってください。');
     }finally{startingBridge=null;starting=false;}
@@ -196,6 +219,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
     const announced=notice+(purpose?`\n本筋：${safeText(purpose)}`:'');
     await channel.send({...safe(announced),flags:MessageFlags.SuppressEmbeds});
     await interaction.editReply(safe(announced));
+    if(config.fixed&&(!channel.members.has(interaction.user.id)||humanCount(channel)===0))throw new Error('開始前に固定VCから退出したため、記録を開始していません。固定VCへ戻って /waigaya start を使ってください。');
     const result=await start(channel,topic,{mode,purpose,ownerId:interaction.user.id,outputChannelId:outputChannelId||null,noticeAt:Date.now()});
     await interaction.editReply({...safe((config.fixed?`会議を記録しています。${mode==='minutes'?'AI音声は停止しています。':'ワイガヤと呼びかけると返答します。'}退出後は自動終了${config.fixed.autoPublish?`・議事録を <#${outputChannelId}> に投稿`:''}します。`:`記録中：${modes[mode]}。${mode==='minutes'?'AI音声は常にOFFです。':''}/pause は記録を一時停止、/quiet はAIだけ停止、/finish は会議を終了して議事録を作ります。`)),components:[]});return result;
     }finally{beginning=false;}
@@ -404,7 +428,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
         current.playback.stop(true);await drain(current);await current.bridge.api(current.bridge.path+'/events',{type:'lifecycle',action:'pause'});await current.bridge.recording(false);if(humanCount(current.channel)===0)await current.grace.members(0);await interaction.editReply(safe('記録を一時停止しました。新しい音声はOpenAIへ送っていません。/resume で再開します。'));return;
       }
       if(action==='resume'){
-        await current.channel.send(safe(`会議の記録を再開します。モード：${modes[state.mode]}。音声をOpenAIへ送り、ホストへ保存します。`));await current.bridge.api(current.bridge.path+'/events',{type:'lifecycle',action:'resume',actorId:interaction.user.id});await current.bridge.recording(true);current.acceptAudio=true;await interaction.editReply(safe('記録を再開しました。再開後の新しい発言だけ記録します。'));return;
+        await current.channel.send(safe(`会議の記録を再開します。モード：${modes[state.mode]}。音声をOpenAIへ送り、ホストへ保存します。`));await current.bridge.api(current.bridge.path+'/events',{type:'lifecycle',action:'resume',actorId:interaction.user.id});await current.bridge.recording(true);current.acceptAudio=true;current.captureActive();await interaction.editReply(safe('記録を再開しました。再開後の新しい発言だけ記録します。'));return;
       }
       if(action==='mode'||action==='auto'){
         const mode=action==='mode'?interaction.options.getString('mode'):interaction.options.getBoolean('enabled')?'facilitator':null;
@@ -437,12 +461,14 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
   async function initializePolicy(guild){
     if(!config.fixed)return;
     await validateChannels(guild,config.fixed);await service.api(`/api/guilds/${config.guildId}/fixed-policy`,config.fixed);policyReady=true;
-    if(!completionWorker){completionWorker=new FixedCompletionWorker({service,client,policy:config.fixed,publisher,notify:notifyOwner,hasActiveSession:id=>meeting?.bridge.state.id===id||startingBridge?.state?.id===id});completionWorker.start();}
+    if(!completionWorker){completionWorker=new FixedCompletionWorker({service,client,policy:config.fixed,publisher,notify:notifyOwner,hasActiveSession:ownsSession});completionWorker.start();}
   }
   client.once(Events.ClientReady,async()=>{
     try {
       if(config.fixed)await initializePolicy(await client.guilds.fetch(config.guildId));
       for(const saved of await list()){
+        // Initialization can finish after the user has explicitly started.
+        if(ownsSession(saved.id))continue;
         await service.api(`/api/sessions/${saved.id}/minutes`,{action:'publication_recover'});
         if(['recording','created'].includes(saved.status)||!saved.fixedOperation&&saved.status==='empty_grace'){
           await service.api(`/api/sessions/${saved.id}/events`,{type:'lifecycle',action:'pause'});
