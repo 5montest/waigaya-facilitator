@@ -109,7 +109,10 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
     const abort = new AbortController();
     const job = (async () => {
       try {
-        const document = await minutesGenerator.generateDraft(snapshot, { signal: abort.signal, onUsage: usage => { r.c.state.usage.push({ ...usage, outcome: 'received', at: Date.now() }); save(r, 'minutes_usage'); } });
+        const document = await minutesGenerator.generateDraft(snapshot, { signal: abort.signal, kind: summary ? 'summary' : 'minutes',
+          checkpoints: { load: key => store.minutesCheckpoint(id, key), save: (key, document) => store.saveMinutesCheckpoint(id, key, document) },
+          onProgress: progress => { if (!appClosing) { r.c.state.minutesProgress = { ...progress, updatedAt: Date.now() }; save(r, 'minutes_progress'); } },
+          onUsage: usage => { r.c.state.usage.push({ ...usage, outcome: 'received', at: Date.now() }); save(r, 'minutes_usage'); } });
         if (appClosing) return;
         checkMinutes(document, snapshot);
         const version = { version: ++r.c.state.minutesVersion, document, confirmedDecisions: structuredClone(snapshot.decisions), metadata: { topic:snapshot.topic,meetingBrief:structuredClone(currentBrief(snapshot)),briefNeedsReview:Boolean(snapshot.meetingBrief?.needsReview),startedAt:snapshot.startedAt,endedAt:snapshot.endedAt,participantNames:[...new Set(snapshot.utterances.map(u=>u.speaker).filter(Boolean))] },briefRevision:snapshot.briefRevision, generatedAt: Date.now(), approvedAt: null, approvedBy: null,humanReviewedAt:null,humanReviewedBy:null,
