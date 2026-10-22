@@ -133,6 +133,7 @@ export function minutesMarkdown(state, version = state.minutesHistory?.at(-1)) {
   const lines = [`# ${version.kind==='summary'?'途中要約（正式議事録ではありません）':'議事録'}：${clean(metadata.topic)}`, '', `- 会議ID：${state.id}`, `- 日時：${metadata.startedAt ? new Date(metadata.startedAt).toISOString() : '不明'}〜${metadata.endedAt ? new Date(metadata.endedAt).toISOString() : '進行中'}`,
     `- 状態：${state.status}`, `- 議事録：版${version.version} ${stale ? '要再確認' : version.approvedAt ? '操作担当者が確認済み' : (state.fixedOperation?'AI生成・未確認':'AI下書き（未承認）')}`,
     `- 参加者（記録で確認）：${(metadata.participantNames || [...new Set(state.utterances.map(u => u.speaker).filter(Boolean))]).map(clean).join('、') || '不明'}`, ''];
+  if(version.recovery?.method==='assistant_without_api')lines.push('作成方法：保存済み文字起こしを支援AIが直接読んで復旧しました。この復旧ではOpenAI APIの追加呼び出しを行っていません。人による確認は未実施です。', '');
   const section = (title, entries, format = entry => clean(entry.text)) => {
     lines.push(`## ${title}`, '');
     lines.push(...(entries.length ? entries.map(e => `- ${format(e)}（根拠：${refs(e.evidence)}${evidenceCurrent(state, e.evidence) ? '' : '。要再確認'}）`) : ['該当なし']), '');
@@ -148,6 +149,11 @@ export function minutesMarkdown(state, version = state.minutesHistory?.at(-1)) {
   lines.push('## 記録の注記', '', 'AIによる整理です。議事録の確認は参加者全員の合意を証明しません。決定候補の確認は別途必要です。');
   if (!state.utterances.some(u => u.final)) lines.push('会議内容なし。');
   if (state.endReason && !['manual', 'empty_timeout', 'leave'].includes(state.endReason)) lines.push(`終了理由：${clean(state.endReason)}。正常終了と区別してください。`);
-  for (const gap of state.gaps || []) lines.push(`- 記録欠損の可能性：${clean(gap.kind)} ${gap.startedAt ? new Date(gap.startedAt).toISOString() : '開始不明'}〜${gap.endedAt ? new Date(gap.endedAt).toISOString() : '終了不明'}`);
+  const gaps=state.gaps||[];
+  if(gaps.length>20){
+    const counts=new Map();for(const gap of gaps)counts.set(gap.kind,(counts.get(gap.kind)||0)+1);
+    for(const [kind,count] of counts)lines.push(`- 記録欠損の可能性：${kind==='stt'?'音声認識の失敗':clean(kind)} ${count}件。発生区間には重複があり、欠損時間や発言数の合計を示す数値ではありません。`);
+    lines.push('- 発言が断片的な箇所や、記録のない内容は補完していません。障害区間の詳細はローカルの原本記録に保持しています。');
+  }else for (const gap of gaps) lines.push(`- 記録欠損の可能性：${clean(gap.kind)} ${gap.startedAt ? new Date(gap.startedAt).toISOString() : '開始不明'}〜${gap.endedAt ? new Date(gap.endedAt).toISOString() : '終了不明'}`);
   return lines.join('\n') + '\n';
 }
