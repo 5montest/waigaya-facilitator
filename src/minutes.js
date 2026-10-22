@@ -2,6 +2,7 @@ import { UserError as Error, UserError } from './errors.js';
 import Ajv from 'ajv';
 import { catalog, keyFor } from './models.js';
 import { currentBrief } from './meeting-brief.js';
+import { createHash } from 'node:crypto';
 
 const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const ref = object({ utteranceId: { type: 'string' }, revision: { type: 'integer' } });
@@ -67,27 +68,55 @@ export function splitChunks(items, limit = 24000) {
   if (current.length) chunks.push(current); return chunks;
 }
 export class MinutesGenerator {
-  constructor({ generate = structuredMinutes, chunkLimit = 24000 } = {}) { this.generate = generate; this.chunkLimit = chunkLimit; }
-  async generateDraft(state, { signal, onUsage = () => {} } = {}) {
+  constructor({ generate = structuredMinutes, chunkLimit = 24000, model = 'gpt-6.1-sol' } = {}) { this.generate = generate; this.chunkLimit = chunkLimit; this.model = model; }
+  async generateDraft(state, { signal, onUsage = () => {}, checkpoints, kind = 'minutes', onProgress = () => {} } = {}) {
     const utterances = state.utterances.filter(u => u.final && u.source !== 'ai').map(u => ({ id: u.id, revision: u.revision, text: u.text, speaker: u.speaker, at: u.startMs }));
     if (!utterances.length) return emptyMinutes();
     const run = async input => {
-      try { const response = await this.generate({ input: { topic: state.topic,meetingBrief:currentBrief(state), ...input }, signal }); onUsage(response.usage); return checkMinutes(response.result, state); }
+      signal?.throwIfAborted();
+      input = { topic: state.topic, meetingBrief: currentBrief(state), ...input };
+      // Content-addressed, session-scoped checkpoints survive retries/restarts. Any
+      // input/revision, brief, schema, prompt, model or document-kind change misses.
+      const key = createHash('sha256').update(JSON.stringify({ format: 1, kind, model: this.model, prompt, schema: minutesSchema, input })).digest('hex');
+      const cached = await checkpoints?.load(key);
+      signal?.throwIfAborted();
+      if (cached) return { document: checkMinutes(cached, state), reused: true };
+      try {
+        const response = await this.generate({ input, model: this.model, signal });
+        onUsage(response.usage);
+        signal?.throwIfAborted();
+        const document = checkMinutes(response.result, state);
+        await checkpoints?.save(key, document);
+        return { document, reused: false };
+      }
       catch (e) { if (e.usage) onUsage(e.usage); throw e; }
     };
-    let drafts = [];
-    for (const chunk of splitChunks(utterances, this.chunkLimit)) drafts.push(await run({ utterances: chunk }));
+    const stage = async (inputs, phase, depth = 0) => {
+      const documents = []; let reused = 0;
+      await onProgress({ phase, depth, completed: 0, total: inputs.length, reused });
+      for (const input of inputs) {
+        const result = await run(input); documents.push(result.document); reused += Number(result.reused);
+        await onProgress({ phase, depth, completed: documents.length, total: inputs.length, reused });
+      }
+      return documents;
+    };
+    let drafts = await stage(splitChunks(utterances, this.chunkLimit).map(utterances => ({ utterances })), 'source');
     // Hierarchical integration keeps original references and never removes the SQLite transcript.
     for (let depth = 0; drafts.length > 1; depth++) {
       if (depth >= 8) throw new Error('議事録の統合が収束しません。原本を保持して停止しました。');
       const groups = splitChunks(drafts.flatMap(d => minutesItems(d).map(entry => ({ ...entry, provisional: true }))), this.chunkLimit);
       if (!groups.length) return emptyMinutes();
-      const next = []; for (const partialSummaries of groups) next.push(await run({ partialSummaries, instruction: '重複を統合し、元の根拠を保持してください。未承認の途中要約です。' }));
+      const next = await stage(groups.map(partialSummaries => ({ partialSummaries, instruction: '重複を統合し、元の根拠を保持してください。未承認の途中要約です。' })), 'integration', depth + 1);
       if (next.length >= drafts.length && depth > 0) throw new Error('議事録の統合サイズを縮小できません。原本を保持しています。');
       drafts = next;
     }
     return drafts[0];
   }
+}
+export function minutesProgressLabel(state) {
+  const p = state.minutesProgress;
+  if (!p) return '';
+  return `${p.phase === 'source' ? '発言の整理' : `統合（${p.depth}段目）`}${p.completed}/${p.total}件${p.reused ? `・保存済み${p.reused}件を再利用` : ''}`;
 }
 export function minutesStale(state, version) {
   if(version.briefRevision!==undefined&&version.briefRevision!==(state.briefRevision||0))return true;
@@ -104,6 +133,7 @@ export function minutesMarkdown(state, version = state.minutesHistory?.at(-1)) {
   const lines = [`# ${version.kind==='summary'?'途中要約（正式議事録ではありません）':'議事録'}：${clean(metadata.topic)}`, '', `- 会議ID：${state.id}`, `- 日時：${metadata.startedAt ? new Date(metadata.startedAt).toISOString() : '不明'}〜${metadata.endedAt ? new Date(metadata.endedAt).toISOString() : '進行中'}`,
     `- 状態：${state.status}`, `- 議事録：版${version.version} ${stale ? '要再確認' : version.approvedAt ? '操作担当者が確認済み' : (state.fixedOperation?'AI生成・未確認':'AI下書き（未承認）')}`,
     `- 参加者（記録で確認）：${(metadata.participantNames || [...new Set(state.utterances.map(u => u.speaker).filter(Boolean))]).map(clean).join('、') || '不明'}`, ''];
+  if(version.recovery?.method==='assistant_without_api')lines.push('作成方法：保存済み文字起こしを支援AIが直接読んで復旧しました。この復旧ではOpenAI APIの追加呼び出しを行っていません。人による確認は未実施です。', '');
   const section = (title, entries, format = entry => clean(entry.text)) => {
     lines.push(`## ${title}`, '');
     lines.push(...(entries.length ? entries.map(e => `- ${format(e)}（根拠：${refs(e.evidence)}${evidenceCurrent(state, e.evidence) ? '' : '。要再確認'}）`) : ['該当なし']), '');
@@ -119,6 +149,11 @@ export function minutesMarkdown(state, version = state.minutesHistory?.at(-1)) {
   lines.push('## 記録の注記', '', 'AIによる整理です。議事録の確認は参加者全員の合意を証明しません。決定候補の確認は別途必要です。');
   if (!state.utterances.some(u => u.final)) lines.push('会議内容なし。');
   if (state.endReason && !['manual', 'empty_timeout', 'leave'].includes(state.endReason)) lines.push(`終了理由：${clean(state.endReason)}。正常終了と区別してください。`);
-  for (const gap of state.gaps || []) lines.push(`- 記録欠損の可能性：${clean(gap.kind)} ${gap.startedAt ? new Date(gap.startedAt).toISOString() : '開始不明'}〜${gap.endedAt ? new Date(gap.endedAt).toISOString() : '終了不明'}`);
+  const gaps=state.gaps||[];
+  if(gaps.length>20){
+    const counts=new Map();for(const gap of gaps)counts.set(gap.kind,(counts.get(gap.kind)||0)+1);
+    for(const [kind,count] of counts)lines.push(`- 記録欠損の可能性：${kind==='stt'?'音声認識の失敗':clean(kind)} ${count}件。発生区間には重複があり、欠損時間や発言数の合計を示す数値ではありません。`);
+    lines.push('- 発言が断片的な箇所や、記録のない内容は補完していません。障害区間の詳細はローカルの原本記録に保持しています。');
+  }else for (const gap of gaps) lines.push(`- 記録欠損の可能性：${clean(gap.kind)} ${gap.startedAt ? new Date(gap.startedAt).toISOString() : '開始不明'}〜${gap.endedAt ? new Date(gap.endedAt).toISOString() : '終了不明'}`);
   return lines.join('\n') + '\n';
 }
