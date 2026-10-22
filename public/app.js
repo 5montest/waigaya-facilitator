@@ -87,6 +87,7 @@ function render(next) {
 function audioStatus() {
   $('audioStatus').textContent = !mic ? (starting ? '準備中' : '待機中') : !ready || !state?.inputHealthy ? '接続中' : voice ? '聞いています' : transcribing ? '記録中' : 'マイク接続中';
   $('audioStatus').textContent += ` · ${{minutes:'議事録のみ',assistant:'呼びかけ応答',facilitator:'AIワイガヤ'}[state?.mode] || ''}${state?.status === 'paused' ? ' · 一時停止' : state?.status === 'completed' ? ' · 会議終了' : state?.status === 'finalizing' ? ' · 議事録生成中' : state?.minutesStatus === 'failed' ? ' · 議事録生成失敗' : ''}`;
+  if (state?.minutesProgress && ['generating','failed'].includes(state.minutesStatus)) { const p = state.minutesProgress; $('audioStatus').textContent += ` · ${p.phase === 'source' ? '発言の整理' : '議事録の統合'} ${p.completed}/${p.total}件${p.reused ? `（保存済み${p.reused}件を再利用）` : ''}`; }
   $('audioStatus').classList.toggle('active', Boolean(mic && ready && state?.inputHealthy));
   $('micLabel').textContent = starting ? '準備中' : mic ? '記録を一時停止' : state?.status === 'paused' ? '記録を再開' : ['completed','finalizing','finalize_failed'].includes(state?.status) ? '会議終了' : '開始';
   $('mic').classList.toggle('recording', Boolean(mic)); $('mic').disabled = starting || ['finalizing','completed','finalize_failed'].includes(state?.status);

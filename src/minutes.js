@@ -2,6 +2,7 @@ import { UserError as Error, UserError } from './errors.js';
 import Ajv from 'ajv';
 import { catalog, keyFor } from './models.js';
 import { currentBrief } from './meeting-brief.js';
+import { createHash } from 'node:crypto';
 
 const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const ref = object({ utteranceId: { type: 'string' }, revision: { type: 'integer' } });
@@ -67,27 +68,55 @@ export function splitChunks(items, limit = 24000) {
   if (current.length) chunks.push(current); return chunks;
 }
 export class MinutesGenerator {
-  constructor({ generate = structuredMinutes, chunkLimit = 24000 } = {}) { this.generate = generate; this.chunkLimit = chunkLimit; }
-  async generateDraft(state, { signal, onUsage = () => {} } = {}) {
+  constructor({ generate = structuredMinutes, chunkLimit = 24000, model = 'gpt-6.1-sol' } = {}) { this.generate = generate; this.chunkLimit = chunkLimit; this.model = model; }
+  async generateDraft(state, { signal, onUsage = () => {}, checkpoints, kind = 'minutes', onProgress = () => {} } = {}) {
     const utterances = state.utterances.filter(u => u.final && u.source !== 'ai').map(u => ({ id: u.id, revision: u.revision, text: u.text, speaker: u.speaker, at: u.startMs }));
     if (!utterances.length) return emptyMinutes();
     const run = async input => {
-      try { const response = await this.generate({ input: { topic: state.topic,meetingBrief:currentBrief(state), ...input }, signal }); onUsage(response.usage); return checkMinutes(response.result, state); }
+      signal?.throwIfAborted();
+      input = { topic: state.topic, meetingBrief: currentBrief(state), ...input };
+      // Content-addressed, session-scoped checkpoints survive retries/restarts. Any
+      // input/revision, brief, schema, prompt, model or document-kind change misses.
+      const key = createHash('sha256').update(JSON.stringify({ format: 1, kind, model: this.model, prompt, schema: minutesSchema, input })).digest('hex');
+      const cached = await checkpoints?.load(key);
+      signal?.throwIfAborted();
+      if (cached) return { document: checkMinutes(cached, state), reused: true };
+      try {
+        const response = await this.generate({ input, model: this.model, signal });
+        onUsage(response.usage);
+        signal?.throwIfAborted();
+        const document = checkMinutes(response.result, state);
+        await checkpoints?.save(key, document);
+        return { document, reused: false };
+      }
       catch (e) { if (e.usage) onUsage(e.usage); throw e; }
     };
-    let drafts = [];
-    for (const chunk of splitChunks(utterances, this.chunkLimit)) drafts.push(await run({ utterances: chunk }));
+    const stage = async (inputs, phase, depth = 0) => {
+      const documents = []; let reused = 0;
+      await onProgress({ phase, depth, completed: 0, total: inputs.length, reused });
+      for (const input of inputs) {
+        const result = await run(input); documents.push(result.document); reused += Number(result.reused);
+        await onProgress({ phase, depth, completed: documents.length, total: inputs.length, reused });
+      }
+      return documents;
+    };
+    let drafts = await stage(splitChunks(utterances, this.chunkLimit).map(utterances => ({ utterances })), 'source');
     // Hierarchical integration keeps original references and never removes the SQLite transcript.
     for (let depth = 0; drafts.length > 1; depth++) {
       if (depth >= 8) throw new Error('議事録の統合が収束しません。原本を保持して停止しました。');
       const groups = splitChunks(drafts.flatMap(d => minutesItems(d).map(entry => ({ ...entry, provisional: true }))), this.chunkLimit);
       if (!groups.length) return emptyMinutes();
-      const next = []; for (const partialSummaries of groups) next.push(await run({ partialSummaries, instruction: '重複を統合し、元の根拠を保持してください。未承認の途中要約です。' }));
+      const next = await stage(groups.map(partialSummaries => ({ partialSummaries, instruction: '重複を統合し、元の根拠を保持してください。未承認の途中要約です。' })), 'integration', depth + 1);
       if (next.length >= drafts.length && depth > 0) throw new Error('議事録の統合サイズを縮小できません。原本を保持しています。');
       drafts = next;
     }
     return drafts[0];
   }
+}
+export function minutesProgressLabel(state) {
+  const p = state.minutesProgress;
+  if (!p) return '';
+  return `${p.phase === 'source' ? '発言の整理' : `統合（${p.depth}段目）`}${p.completed}/${p.total}件${p.reused ? `・保存済み${p.reused}件を再利用` : ''}`;
 }
 export function minutesStale(state, version) {
   if(version.briefRevision!==undefined&&version.briefRevision!==(state.briefRevision||0))return true;

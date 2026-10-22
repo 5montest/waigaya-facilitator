@@ -1,5 +1,6 @@
 import { statusLabels,minutesLabels,healthLabels } from '../meeting.js';
 import { publicationLabels } from '../publication.js';
+import { minutesProgressLabel } from '../minutes.js';
 export function fixedStatus(state,now=Date.now()) {
  const version=state.minutesHistory.at(-1),publication=state.publications.findLast(p=>p.version===version?.version&&p.channelId===state.outputChannelId);
  const lines=[`会議：${state.topic}`,`状態：${statusLabels[state.status]||'状態を確認してください'}（約${Math.max(0,Math.floor(((state.endedAt||now)-(state.startedAt||now))/60000))}分）`];
@@ -8,6 +9,7 @@ export function fixedStatus(state,now=Date.now()) {
  if(state.status==='paused')lines.push('記録を止めています。再開は /waigaya resume。');
  if(state.status==='empty_grace')lines.push('新しい音声は送信していません。3分以内の復帰を待っています。');
  lines.push(`議事録：${minutesLabels[state.minutesStatus]||'未作成'}${version?`／版${version.version}（${version.approvedAt?'人が確認済み':'AI生成・未確認'}）`:''}`);
+ if(state.minutesProgress&&['generating','failed'].includes(state.minutesStatus))lines.push(minutesProgressLabel(state));
  if(publication){lines.push(`投稿：${publicationLabels[publication.status]||'確認が必要'}`);if(publication.url)lines.push(`<${publication.url}>`);}
  else if(state.completionJob?.status==='failed')lines.push('自動処理に失敗しました。原本の状態を /waigaya minutes で確認してください。');
  else if(state.completionJob?.status==='skipped_empty')lines.push('文字起こしが0件のため投稿を省略しました。話していた場合は管理者へ連絡してください。');

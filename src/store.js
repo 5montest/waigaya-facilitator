@@ -13,6 +13,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, at INTEGER, kind TEXT, payload TEXT);
       CREATE TABLE IF NOT EXISTS session_parts (session_id TEXT, field TEXT, ordinal INTEGER, state TEXT NOT NULL, PRIMARY KEY(session_id,field,ordinal));
       CREATE TABLE IF NOT EXISTS guild_settings (guild_id TEXT PRIMARY KEY, state TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS minutes_checkpoints (session_id TEXT NOT NULL, cache_key TEXT NOT NULL, document TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(session_id,cache_key));
       CREATE INDEX IF NOT EXISTS events_session_seq ON events(session_id,seq);`);
     this.cache=new Map();this.metrics={serializedBytes:0,changedParts:0,saves:0};
     // Transactional, additive migration. Existing audit events and record IDs remain intact.
@@ -50,6 +51,8 @@ export class Store {
     this.metrics.saves++;this.metrics.changedParts+=changes.length;this.metrics.serializedBytes+=Buffer.byteLength(coreJSON)+Buffer.byteLength(eventJSON)+changes.reduce((n,p)=>n+Buffer.byteLength(p.value),0);
   }
   list(){return this.db.prepare('SELECT id FROM sessions').all().map(row=>this.load(row.id));}
+  minutesCheckpoint(id,key){const row=this.db.prepare('SELECT document FROM minutes_checkpoints WHERE session_id=? AND cache_key=?').get(id,key);return row?JSON.parse(row.document):null;}
+  saveMinutesCheckpoint(id,key,document){this.db.prepare('INSERT INTO minutes_checkpoints(session_id,cache_key,document,created_at) VALUES (?,?,?,?) ON CONFLICT(session_id,cache_key) DO UPDATE SET document=excluded.document,created_at=excluded.created_at').run(id,key,JSON.stringify(document),Date.now());}
   guildSettings(id){const row=this.db.prepare('SELECT state FROM guild_settings WHERE guild_id=?').get(id);return row?JSON.parse(row.state):{guildId:id,defaultMinutesChannelId:null};}
   saveGuildSettings(state){this.db.prepare('INSERT INTO guild_settings(guild_id,state) VALUES (?,?) ON CONFLICT(guild_id) DO UPDATE SET state=excluded.state').run(state.guildId,JSON.stringify(state));return state;}
   events(id){return this.db.prepare('SELECT seq,at,kind,payload FROM events WHERE session_id=? ORDER BY seq').all(id).map(r=>({...r,payload:JSON.parse(r.payload)}));}
