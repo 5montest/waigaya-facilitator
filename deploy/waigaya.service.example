@@ -1,0 +1,27 @@
+[Unit]
+Description=Waigaya Discord bot and meeting server
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@WORKSPACE@
+ExecStart=@NODE@ @WORKSPACE@/scripts/run-discord-test.js --profile @PROFILE@ --database @DATABASE@ --port 8875
+Restart=always
+RestartSec=10s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+Environment=NODE_ENV=production
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=waigaya
+
+[Install]
+WantedBy=multi-user.target
