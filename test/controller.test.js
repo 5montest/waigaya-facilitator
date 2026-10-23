@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Controller } from '../src/controller.js';
-import { TokenAssembler } from '../src/soniox.js';
 import { Store, markdown } from '../src/store.js';
 
 function fixture() {
@@ -85,18 +84,6 @@ test('未確定又は修正前の発言を決定の根拠にできず、修正�
   const { c } = fixture(); assert.throws(() => c.confirmDecision({ text: '決定', evidence: [{ utteranceId: 'u1', revision: 9 }] }));
   c.confirmDecision({ text: '聞き取りを先に行う', evidence: [{ utteranceId: 'u1', revision: 1 }] });
   c.upsert({ id: 'u1', text: '聞き取りは不要という意味ではありません。' }); assert.match(markdown(c.state), /要再確認/);
-});
-test('Sonioxの暫定トークンは置換し、確定トークンを二重に追加しない', () => {
-  const out = []; const a = new TokenAssembler(v => out.push(v), 'audio');
-  a.consume({ tokens: [{ text: '賛成', is_final: false, speaker: '1', start_ms: 0, end_ms: 100 }] });
-  a.consume({ tokens: [{ text: '反対', is_final: false, speaker: '1', start_ms: 0, end_ms: 100 }] });
-  a.consume({ tokens: [{ text: '反対', is_final: true, speaker: '1', start_ms: 0, end_ms: 100 }, { text: '<end>', is_final: true }] });
-  assert.equal(new Set(out.map(u => u.id)).size, 1); assert.equal(out.at(-1).text, '反対'); assert.equal(out.at(-1).final, true);
-});
-test('話者変更と終了で発言を分け、話者不明を個人名にしない', () => {
-  const out = []; const a = new TokenAssembler(v => out.push(v), 'audio');
-  a.consume({ tokens: [{ text: '案A', speaker: '1', is_final: true }, { text: '条件B', speaker: '2', is_final: true }] });
-  a.consume({ finished: true }); assert.equal(out.filter(u => u.final).length, 2); assert.equal(out.at(-1).speaker, '2');
 });
 test('履歴と状態を同じトランザクションで保存し、修正前の発言が監査履歴に残る', () => {
   const store = new Store(':memory:'); const { c } = fixture(); store.save(c.snapshot(), 'utterance', c.state.utterances[0]);

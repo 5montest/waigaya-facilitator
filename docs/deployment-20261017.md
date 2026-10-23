@@ -26,7 +26,7 @@
 node scripts/run-discord-test.js --profile /immich/media/agent-work/20261007-ai-discussion-facilitator-recorder --database data/live-validation.sqlite --port 8875
 ```
 
-実行情報・PID・ログは作業フォルダーの `results/bot-runtime.json`、`results/bot-runtime.pid`、`results/bot-runtime-20261017.log` に保存する。これはOS起動時の自動起動や障害時の自動再起動を導入したものではない。
+当時の実行情報・PID・ログは作業フォルダーの `results/bot-runtime.json`、`results/bot-runtime.pid`、`results/bot-runtime-20261017.log` に保存した。これはOS起動時の自動起動や障害時の自動再起動を導入したものではない。10月23日の整理では、内容が同じログを `results/bot-runtime-20261017-050645.log` に一本化した。現在の常駐管理は [サービス運用手順](service-operation.md) を参照する。
 
 適用コードのローカル全体テストは176件成功。GitHub Actionsの [push](https://github.com/5montest/waigaya-facilitator/actions/runs/38998331090) と [pull_request](https://github.com/5montest/waigaya-facilitator/actions/runs/38998333520) も成功。初回ローカル実行の既存テスト1件のタイムアウトは [検証記録](validation.md) に残している。
 
