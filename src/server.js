@@ -9,7 +9,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Controller } from './controller.js';
 import { analyze, catalog, keyFor } from './models.js';
 import { Store, markdown } from './store.js';
-import { connectStt, synthesize, sttModels, defaultSttModel, ttsModel } from './openai-audio.js';
+import { connectStt, synthesize, sttModels, sttFailureCategories, defaultSttModel, ttsModel } from './openai-audio.js';
 import { loadOpenAIKey, loadServiceToken } from './credentials.js';
 import { requestAllowed } from './network.js';
 
@@ -112,7 +112,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
         const document = await minutesGenerator.generateDraft(snapshot, { signal: abort.signal, kind: summary ? 'summary' : 'minutes',
           checkpoints: { load: key => store.minutesCheckpoint(id, key), save: (key, document) => store.saveMinutesCheckpoint(id, key, document) },
           onProgress: progress => { if (!appClosing) { r.c.state.minutesProgress = { ...progress, updatedAt: Date.now() }; save(r, 'minutes_progress'); } },
-          onUsage: usage => { r.c.state.usage.push({ ...usage, outcome: 'received', at: Date.now() }); save(r, 'minutes_usage'); } });
+          onUsage: usage => { r.c.state.usage.push({ outcome: 'received', ...usage, at: Date.now() }); save(r, 'minutes_usage'); } });
         if (appClosing) return;
         checkMinutes(document, snapshot);
         const version = { version: ++r.c.state.minutesVersion, document, confirmedDecisions: structuredClone(snapshot.decisions), metadata: { topic:snapshot.topic,meetingBrief:structuredClone(currentBrief(snapshot)),briefNeedsReview:Boolean(snapshot.meetingBrief?.needsReview),startedAt:snapshot.startedAt,endedAt:snapshot.endedAt,participantNames:[...new Set(snapshot.utterances.map(u=>u.speaker).filter(Boolean))] },briefRevision:snapshot.briefRevision, generatedAt: Date.now(), approvedAt: null, approvedBy: null,humanReviewedAt:null,humanReviewedBy:null,
@@ -124,7 +124,6 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
         r.c.state.lastError = null; save(r, 'minutes_ready', { version: version.version });
       } catch {
         if (appClosing) return;
-        r.c.state.usage.push({provider:'openai',kind:'minutes',outcome:'failed_billing_unknown',estimatedUsd:null,at:Date.now()});
         r.c.state.minutesStatus = 'failed'; if (!summary) r.c.state.status = 'finalize_failed';
         r.c.state.lastError = '議事録生成に失敗しました。文字起こしの削除は行っていません。保存状態はstatusで確認し、minutesから再生成できます。';
         save(r, 'minutes_failed');
@@ -269,6 +268,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
             if(u?.provider!=='openai'||u.kind!=='stt'||!model||!Number.isFinite(u.uploadedAudioSeconds)||u.uploadedAudioSeconds<0||u.uploadedAudioSeconds>86400)throw new Error('音声の使用量が不正です。');
             r.c.state.usage.push({provider:'openai',kind:'stt',model:model.model,uploadedAudioSeconds:u.uploadedAudioSeconds,
               estimatedUsd:u.outcome==='failed_billing_unknown'?null:u.uploadedAudioSeconds/60*model.usdPerMinute,
+              ...(u.outcome==='failed_billing_unknown'&&sttFailureCategories.includes(u.failureCategory)?{failureCategory:u.failureCategory}:{}),
               outcome:u.outcome==='failed_billing_unknown'?'failed_billing_unknown':'closed',estimateBasis:'送信音声時間×公開単価。請求額ではない',at:Date.now()});
             break;
           }
@@ -279,12 +279,13 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
       if (route === 'analyze') {
         if (body.provider !== 'openai') throw new Error('MVPではOpenAIのモデルを選んでください。');
         if (body.mode !== undefined && !['live', 'reply', 'autonomous','voice_request'].includes(body.mode)) throw new Error('返答のモードが不正です。');
+        if (body.contextLocked !== undefined && (typeof body.contextLocked !== 'boolean' || body.mode !== 'voice_request')) throw new Error('音声依頼の再検討設定が不正です。');
         if (body.trigger !== undefined && body.trigger !== 'auto') throw new Error('依頼の種類が不正です。');
         if (body.trigger === 'auto' && (!automaticSpeechAllowed(r.c.state) || !r.c.state.inputHealthy || ['stt','storage','connection'].some(k=>r.c.state.health[k]==='failed') || body.mode !== 'autonomous')) throw new Error('自律発言は停止中です。');
         if (!r.c.state.utterances.some(u => u.final)) throw new Error('確定した発言を追加してください。');
         r.pending?.abort.abort();
         if(body.mode==='voice_request'){const q=body.voiceRequest,u=r.c.state.utterances.find(u=>u.id===q?.utteranceId);if(!r.c.state.fixedOperation||!canSpeak(r.c.state)||!r.c.state.inputHealthy||['stt','storage','connection'].some(k=>r.c.state.health?.[k]==='failed')||!u?.final||u.source!=='discord'||u.revision!==q.revision||u.userId!==q.userId||typeof q.question!=='string'||q.question.length>12000)throw new Error('現在の確定発言からの呼びかけが必要です。');}
-        const ticket = r.c.beginRequest({ mode: body.mode || 'live',...(body.mode==='voice_request'?{voiceRequest:body.voiceRequest}:{}) });
+        const ticket = r.c.beginRequest({ mode: body.mode || 'live',...(body.mode==='voice_request'?{voiceRequest:body.voiceRequest,contextLocked:body.contextLocked}:{}) });
         const pending = { ...ticket, abort: new AbortController() }; r.pending = pending;
         save(r, 'analysis_requested', { provider: body.provider, model: body.model, mode: ticket.mode, trigger: body.trigger || 'manual' });
         // モデル処理中も音声入力・停止操作を受け付ける。
@@ -363,7 +364,8 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
           r.heartbeatAt = Date.now();
         } else if (event.type === 'vad' && r.micOwner === ws && healthy) {
           if (typeof event.active !== 'boolean') throw new Error('音声状態が不正です。');
-          r.c.voice(event.active); save(r, event.active ? 'voice_start' : 'voice_end');
+          if (event.interrupt !== undefined && typeof event.interrupt !== 'boolean') throw new Error('音声割込みの設定が不正です。');
+          r.c.voice(event.active, { interrupt: event.interrupt !== false }); save(r, event.active ? 'voice_start' : 'voice_end');
           stt?.voice(event.active);
         } else if (event.type === 'mic_stop' && r.micOwner === ws) {
           closing = true; lost(); stt?.end(); r.micOwner = null;
@@ -377,7 +379,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
           let bytes = 0;
           r.ttsBytes = 0;
           r.tts = ttsSynthesize({ text: permit.text,
-            onChunk: b => { bytes += b.length; if (r.ttsEpoch === permit.epoch) r.ttsBytes = bytes; if (r.c.state.outputEpoch === permit.epoch && !r.c.state.speaking) send(ws, { type: 'tts_chunk', epoch: permit.epoch, audio: b.toString('base64'), sampleRate: 24000 }); },
+            onChunk: b => { bytes += b.length; if (r.ttsEpoch === permit.epoch) r.ttsBytes = bytes; if (r.c.state.outputEpoch === permit.epoch) send(ws, { type: 'tts_chunk', epoch: permit.epoch, audio: b.toString('base64'), sampleRate: 24000 }); },
             onDone: () => {
               if (r.c.state.outputEpoch !== permit.epoch || r.ttsEpoch !== permit.epoch) return;
               r.c.state.usage.push({ provider: 'openai', model: ttsModel, kind: 'tts', generatedPcmBytes: bytes, generatedAudioSeconds: bytes / 48000, estimatedUsd: null, at: Date.now() });

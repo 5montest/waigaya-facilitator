@@ -1,13 +1,12 @@
-import { UserError as Error, UserError } from './errors.js';
+import { UserError as Error } from './errors.js';
 import Ajv from 'ajv';
-import { catalog, glmEndpoint, keyFor } from './models.js';
+import { glmEndpoint, keyFor } from './models.js';
 import { currentBrief } from './meeting-brief.js';
 import { createHash } from 'node:crypto';
 
 const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const ref = object({ utteranceId: { type: 'string' }, revision: { type: 'integer' } });
-// maxLengthをスキーマ自体に課す。GLMは指示での文字数上限を守りにくく、
-// 出力の肥大化がタイムアウト・出力途切れの主因のため、検証で強制する。
+// 受信後に長さを検証する。生成そのものの出力量はmax_tokensと指示で制限する。
 const item = object({ text: { type: 'string', maxLength: 400 }, evidence: { type: 'array', items: ref } });
 export const minutesSchema = object({
   overview: { type: 'array', items: item }, ideas: { type: 'array', items: item },
@@ -25,7 +24,7 @@ export function checkMinutes(document, state) {
   if (!validate(document)) fail('議事録の出力形式が不正です。');
   for (const key of Object.keys(minutesSchema.properties)) if (document[key].length > 50) fail('議事録の項目が多すぎます。');
   for (const entry of minutesItems(document)) {
-    if (!entry.text.trim() || entry.text.length > 2000 || !evidenceCurrent(state, entry.evidence)) fail('議事録に未確定・不明な根拠があります。');
+    if (!entry.text.trim() || !evidenceCurrent(state, entry.evidence)) fail('議事録に未確定・不明な根拠があります。');
   }
   for (const entry of document.actionItems) {
     const source = entry.evidence.map(r => state.utterances.find(u => u.id === r.utteranceId)?.text || '').join('\n');
@@ -42,14 +41,13 @@ meetingBriefは開始者・管理担当者が明示した本筋・比較軸で�
 決定に見える発言もdecisionCandidatesです。沈黙・AI自身の発言は合意の証拠ではありません。
 担当・期限は引用した発言に明記される文字列だけを使い、不明ならnull。存在しない案・比較軸・日時を補いません。
 overviewは短い概要、ideasは案、comparisonsは違いや条件、openIssuesは未決、actionItemsは行動案です。
-各配列は最大8件、各textは最大250文字。会話がなければ全配列を空にします。入力の途中要約も未承認です。
+会話がなければ全配列を空にします。入力の途中要約も未承認です。
 部分的な入力では、その部分で意味のある項目だけを短く書きます。項目数を稼ぐための細切れ・重複は不要です。
 根拠は入力に示された発言idとrevisionをそのまま一対で書き、存在しないid・revisionを作らないでください。指定JSONのみを返します。`;
 export async function structuredMinutes({ input, model = 'glm-5.3-flash', signal, fetchImpl = fetch }) {
   const key = keyFor('glm'); if (!key) throw new Error('議事録用AIのキーが未設定です。');
   const started = performance.now();
-  // ローカルのAnthropic互換ブリッジ経由のGLM。OpenAIのResponses APIと課金を避け、
-  // スキーマは検証（checkMinutes）で担保する。
+  // 中継の先では外部サービスが推論する。費用は契約を確認するまで未算定。
   const response = await fetchImpl(glmEndpoint(), { method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({ model, max_tokens: 24000, system: prompt + '\nJSON Schema: ' + JSON.stringify(minutesSchema),
@@ -58,17 +56,16 @@ export async function structuredMinutes({ input, model = 'glm-5.3-flash', signal
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(360000)]) : AbortSignal.timeout(360000) });
   if (!response.ok) throw new Error(`議事録AI: HTTP ${response.status}（接続・利用設定を確認してください）`);
   const raw = await response.json();
+  const usage = { provider: 'glm', model, kind: 'minutes', inputTokens: raw.usage?.input_tokens ?? null, outputTokens: raw.usage?.output_tokens ?? null,
+    elapsedMs: Math.round(performance.now() - started), estimatedUsd: null, estimateBasis: 'ブリッジ上流の契約・請求額は未確認。費用未算定' };
   if (raw.stop_reason !== 'end_turn') {
     // 出力上限での途切れは書き直せば収まる可能性があるため、検証系の失敗として再試行する。
     const e = new Error(raw.stop_reason === 'max_tokens' ? '議事録の出力が長すぎて途切れました。各textをもっと短く書いてください。' : '議事録の生成が完了しませんでした。');
+    e.usage = { ...usage, outcome: 'incomplete' };
     if (raw.stop_reason === 'max_tokens') e.validation = true;
     throw e;
   }
   const text = (raw.content ?? []).filter(c => c.type === 'text').map(c => c.text).join('');
-  const rates = catalog.find(m => m.provider === 'glm' && m.model === model);
-  const inputTokens = raw.usage?.input_tokens, outputTokens = raw.usage?.output_tokens;
-  const usage = { provider: 'glm', model, kind: 'minutes', inputTokens: inputTokens ?? null, outputTokens: outputTokens ?? null,
-    elapsedMs: Math.round(performance.now() - started), estimatedUsd: rates && Number.isFinite(inputTokens) && Number.isFinite(outputTokens) ? (inputTokens * rates.input + outputTokens * rates.output) / 1e6 : null };
   let result;
   try { result = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, '')); }
   catch { const e = new Error('議事録の応答がJSONではありません。'); e.usage = usage; e.validation = true; throw e; }
@@ -85,7 +82,6 @@ export function splitChunks(items, limit = 24000) {
   if (current.length) chunks.push(current); return chunks;
 }
 export class MinutesGenerator {
-  // GLMは呼び出しが無料なので分割数より1回あたりの安定性を優先する。
   // 大きすぎるチャンクは思考トークンで出力上限を消費しJSONが途切れるため、控えめに分割する。
   constructor({ generate = structuredMinutes, chunkLimit = 24000, model = 'glm-5.3-flash' } = {}) { this.generate = generate; this.chunkLimit = chunkLimit; this.model = model; }
   async generateDraft(state, { signal, onUsage = () => {}, checkpoints, kind = 'minutes', onProgress = () => {} } = {}) {
@@ -94,31 +90,44 @@ export class MinutesGenerator {
     const aliases = new Map(list.map((u, index) => [`u${index + 1}`, u.id]));
     const utterances = list.map((u, index) => ({ id: `u${index + 1}`, revision: u.revision, text: u.text, speaker: u.speaker, at: u.startMs }));
     if (!utterances.length) return emptyMinutes();
-    const expand = document => { for (const entry of minutesItems(document)) entry.evidence = entry.evidence.map(r => ({ ...r, utteranceId: aliases.get(r.utteranceId) ?? r.utteranceId })); return document; };
+    const expand = document => {
+      if (!validate(document)) { const e = new Error('議事録の出力形式が不正です。'); e.validation = true; throw e; }
+      for (const entry of minutesItems(document)) entry.evidence = entry.evidence.map(r => ({ ...r, utteranceId: aliases.get(r.utteranceId) ?? r.utteranceId }));
+      return document;
+    };
     const run = async input => {
       signal?.throwIfAborted();
       input = { topic: state.topic, meetingBrief: currentBrief(state), ...input };
+      const refs = input.utterances?.map(u => ({ utteranceId: u.id, revision: u.revision })) ?? input.partialSummaries.flatMap(entry => entry.evidence);
+      const sourceRefs = refs.map(r => ({ ...r, utteranceId: aliases.get(r.utteranceId) ?? r.utteranceId }));
+      const scope = { utterances: state.utterances.filter(u => sourceRefs.some(r => r.utteranceId === u.id && r.revision === u.revision)) };
       // Content-addressed, session-scoped checkpoints survive retries/restarts. Any
       // input/revision, brief, schema, prompt, model or document-kind change misses.
-      const key = createHash('sha256').update(JSON.stringify({ format: 1, kind, model: this.model, prompt, schema: minutesSchema, input })).digest('hex');
+      const key = createHash('sha256').update(JSON.stringify({ format: 2, kind, model: this.model, prompt, schema: minutesSchema, input, sourceRefs })).digest('hex');
       const cached = await checkpoints?.load(key);
       signal?.throwIfAborted();
-      if (cached) return { document: checkMinutes(cached, state), reused: true };
+      if (cached) return { document: checkMinutes(cached, scope), reused: true };
       // 検証失敗（架空の根拠IDなど）は入力のまま高額な再生成を繰り返さず、
       // エラー内容を添えて同じ入力で上限2回やり直す。接続・生成の失敗は
       // 即座に伝え、チェックポイントによる再開に任せる。
       let lastError;
       for (let attempt = 0; attempt < 3; attempt++) {
         signal?.throwIfAborted();
+        let response;
         try {
-          const response = await this.generate({ input: attempt ? { ...input, validationError: `${lastError.message}。根拠には入力の発言idとrevisionをそのまま使ってください。存在しないidは参照しないでください。各textは短く簡潔に書いてください。` } : input, model: this.model, signal });
-          onUsage(response.usage);
-          signal?.throwIfAborted();
-          const document = checkMinutes(expand(response.result), state);
-          await checkpoints?.save(key, document);
-          return { document, reused: false };
+          response = await this.generate({ input: attempt ? { ...input, validationError: `${lastError.message}。根拠には入力の発言idとrevisionをそのまま使ってください。存在しないidは参照しないでください。各textは短く簡潔に書いてください。` } : input, model: this.model, signal });
         }
-        catch (e) { if (e.usage) onUsage(e.usage); if (!e.validation) throw e; lastError = e; }
+        catch (e) {
+          onUsage(e.usage ?? { provider: 'glm', model: this.model, kind: 'minutes', outcome: 'failed_billing_unknown', estimatedUsd: null });
+          if (!e.validation) throw e; lastError = e; continue;
+        }
+        onUsage(response.usage);
+        signal?.throwIfAborted();
+        let document;
+        try { document = checkMinutes(expand(response.result), scope); }
+        catch (e) { if (!e.validation) throw e; lastError = e; continue; }
+        await checkpoints?.save(key, document);
+        return { document, reused: false };
       }
       throw lastError;
     };

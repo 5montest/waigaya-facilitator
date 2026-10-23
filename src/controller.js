@@ -1,4 +1,4 @@
-import { UserError as Error, UserError } from './errors.js';
+import { UserError as Error } from './errors.js';
 import { randomUUID } from 'node:crypto';
 import { initialMeeting, transition, modes, canSpeak, isMeaningful } from './meeting.js';
 
@@ -16,8 +16,9 @@ export class Controller {
   snapshot() { return structuredClone(this.state); }
   invalidate({ preserveReply = false, reason = 'context_changed' } = {}) {
     this.state.candidate = null;
-    if (!(preserveReply && ['reply', 'autonomous', 'voice_request'].includes(this.state.request?.mode))) this.stop('context_changed');
-    if (!(preserveReply && ['reply', 'autonomous', 'voice_request'].includes(this.state.request?.mode))) {
+    const keep = preserveReply && (Boolean(this.state.playback) || ['reply', 'autonomous', 'voice_request'].includes(this.state.request?.mode));
+    if (!keep) {
+      this.stop('context_changed');
       this.state.reply = null;
       if (this.state.request) {this.state.request.status = 'needs_refresh';this.state.request.invalidatedBy=reason;}this.voiceRequestStatus('cancelled');
     }
@@ -57,9 +58,11 @@ export class Controller {
     if (endMs === undefined) endMs = old?.endMs ?? null;
     if (![startMs, endMs].every(v => v === null || (Number.isFinite(v) && v >= 0))) throw new Error('時刻が不正です。');
     if (old && old.text === text && old.final === final && old.speaker === speaker && old.startMs === startMs && old.endMs === endMs) return old;
-    // 依頼への返答は依頼時点の確定発言を使う。追加・未確定発言の更新で検討を捨てない。
-    // 確定発言の訂正は、回答の前提が変わるので取り消す。
-    const preserveReply = (!old || !old.final) && (!['autonomous','voice_request'].includes(this.state.request?.mode) || !final || !isMeaningful(text));
+    // 再生許可後は遅着した文字起こしで音声を切らない。実際の割込みはVADで判定する。
+    // 音声依頼は一度だけ最新文脈で再検討し、その後はその時点の入力を使う。
+    // 確定発言の訂正は、いずれの場合も回答の前提を失効させる。
+    const request = this.state.request;
+    const preserveReply = (!old || !old.final) && (Boolean(this.state.playback) || request?.contextLocked || !['autonomous','voice_request'].includes(request?.mode) || !final || !isMeaningful(text));
     this.invalidate({ preserveReply,reason:(!old||!old.final)&&final&&isMeaningful(text)?'new_utterance':'utterance_changed' });
     const next = { id, text, speaker, final, startMs, endMs, source: old?.source ?? source, userId:old?.userId??userId, revision: (old?.revision ?? 0) + 1, receivedAt: old?.receivedAt ?? this.clock() };
     if (old) Object.assign(old, next); else this.state.utterances.push(next);
@@ -67,13 +70,13 @@ export class Controller {
     this.state.utterances.sort((a, b) => (a.startMs ?? a.receivedAt) - (b.startMs ?? b.receivedAt));
     return next;
   }
-  voice(active) {
+  voice(active, { interrupt = true } = {}) {
     this.state.speaking = active;
     if (active) {
       this.state.voiceEpoch++;
       this.state.lastVoiceAt = this.clock();
       this.state.candidate = null;
-      this.stop('human_speaking');
+      if (interrupt) this.stop('human_speaking');
       if (this.state.request && !['reply', 'autonomous', 'voice_request'].includes(this.state.request.mode)) this.state.request.status = 'needs_refresh';
     } else this.state.lastVoiceAt = this.clock();
   }
@@ -81,11 +84,11 @@ export class Controller {
     this.state.inputHealthy = value;
     if (!value) { this.state.voiceEpoch++; this.state.speaking = false; this.state.candidate = null; this.stop('input_lost'); }
   }
-  beginRequest({ mode = 'live',voiceRequest } = {}) {
+  beginRequest({ mode = 'live', voiceRequest, contextLocked = false } = {}) {
     const id = randomUUID();
     this.stop('new_request');
     this.state.candidate = null;
-    this.state.request = { id, mode, status: 'thinking', revision: this.state.revision, createdAt: this.clock(),...(voiceRequest?{voiceRequest:structuredClone(voiceRequest)}:{}) };
+    this.state.request = { id, mode, status: 'thinking', revision: this.state.revision, createdAt: this.clock(), ...(mode === 'voice_request' && contextLocked ? { contextLocked: true } : {}), ...(voiceRequest?{voiceRequest:structuredClone(voiceRequest)}:{}) };
     if(voiceRequest){this.state.voiceRequests??=[];this.state.voiceRequests.push({id,...structuredClone(voiceRequest),status:'thinking'});}
     this.state.error = null;
     return { requestId: id, mode, revision: this.state.revision, voiceEpoch: this.state.voiceEpoch, state: this.snapshot() };
@@ -148,7 +151,7 @@ export class Controller {
   }
   played(epoch, heardMs = 0) {
     const p = this.state.playback;
-    if (!p || epoch !== this.state.outputEpoch || p.epoch !== epoch || !this.state.inputHealthy || this.state.speaking) return false;
+    if (!p || epoch !== this.state.outputEpoch || p.epoch !== epoch || !this.state.inputHealthy) return false;
     p.status = 'playing';this.voiceRequestStatus('playing');
     p.startedAt ??= this.clock();
     p.heardMs = Math.max(p.heardMs, Math.min(60000, Math.max(0, heardMs)));

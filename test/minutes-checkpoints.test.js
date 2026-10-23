@@ -27,10 +27,10 @@ test('統合失敗後はSQLite再接続・新しいGeneratorでも完了した�
  const generate=async({input})=>{if(input.utterances)sources++;else{merges++;if(fail)throw new Error('simulated timeout');}return response(input);};
  try {
   await assert.rejects(new MinutesGenerator({chunkLimit:700,generate}).generateDraft(s,{checkpoints:cache(store,s.id),onUsage:()=>usage++}),/simulated timeout/);
-  assert.equal(sources,3);assert.equal(merges,1);assert.equal(usage,3);
+  assert.equal(sources,3);assert.equal(merges,1);assert.equal(usage,4);
   store.close();store=new Store(path);fail=false;const progress=[];
   const d=await new MinutesGenerator({chunkLimit:700,generate}).generateDraft(s,{checkpoints:cache(store,s.id),onProgress:p=>progress.push(p),onUsage:()=>usage++});
-  assert.equal(sources,3);assert.equal(merges,2);assert.equal(usage,4);assert.equal(d.overview[0].evidence.length,3);
+  assert.equal(sources,3);assert.equal(merges,2);assert.equal(usage,5);assert.equal(d.overview[0].evidence.length,3);
   assert.ok(progress.some(p=>p.phase==='source'&&p.completed===3&&p.reused===3));
  } finally {store.close();rmSync(dir,{recursive:true,force:true});}
 });

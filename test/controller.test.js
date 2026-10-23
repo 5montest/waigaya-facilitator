@@ -103,3 +103,24 @@ test('履歴と状態を同じトランザクションで保存し、修正前�
   c.upsert({ id: 'u1', text: '訂正します。' }); store.save(c.snapshot(), 'utterance', c.state.utterances[0]);
   assert.equal(store.load(c.state.id).utterances[0].revision, 2); assert.equal(store.events(c.state.id)[0].payload.text, '仕様の確定には反対です。'); store.close();
 });
+
+test('音声依頼の再検討中は補足が続いても破棄せず、根拠訂正と新依頼は取り消す', () => {
+  for (const change of [c => c.upsert({id:'u1',text:'前提を訂正します。'}), c => c.beginRequest({mode:'voice_request'})]) {
+    const {c,result,advance}=fixture();c.healthy(true);advance(1000);
+    const ticket=c.beginRequest({mode:'voice_request',contextLocked:true});
+    for(let i=0;i<5;i++)c.upsert({id:'extra-'+i,text:'補足の条件です。'});
+    assert.equal(c.state.request.status,'thinking');assert.equal(c.accept(result,ticket),true);
+    c.upsert({id:'after-ready',text:'回答待ちの間の補足です。'});
+    const permit=c.permitReply(ticket.requestId);
+    c.upsert({id:'after-permit',text:'許可後に遅れて届いた文字起こしです。'});
+    assert.equal(c.state.playback.epoch,permit.epoch);change(c);assert.equal(c.state.playback,null);
+  }
+});
+test('自律返答の許可後は相槌中も音声と再生通知を保ち、確定した割込みで止める', () => {
+  const {c,result,advance}=fixture();c.healthy(true);advance(1000);
+  const ticket=c.beginRequest({mode:'autonomous'});assert.equal(c.accept(result,ticket),true);
+  const permit=c.permitReply(ticket.requestId);
+  c.voice(true,{interrupt:false});c.upsert({id:'ack',text:'なるほど、参考になります。'});
+  assert.equal(c.state.playback.epoch,permit.epoch);assert.equal(c.played(permit.epoch,1200),true);
+  c.stop('human_speaking');assert.equal(c.state.playback,null);assert.equal(c.played(permit.epoch,1500),false);
+});

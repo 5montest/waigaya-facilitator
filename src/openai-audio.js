@@ -9,6 +9,7 @@ export const sttModels = [
 ];
 export const defaultSttModel = 'gpt-transcribe';
 export const ttsModel = 'gpt-4o-mini-tts';
+export const sttFailureCategories = ['setup_timeout', 'finalize_timeout', 'connect_failed', 'connection_closed', 'protocol_error', 'transcription_failed', 'api_error', 'rate_limit_exceeded', 'insufficient_quota', 'input_audio_buffer_commit_empty', 'session_expired'];
 
 // item_idとcommit順を結び付け、最終結果の到着順で会話を並べ替えない。
 // 時刻は端末から送ったPCMの境界。単語の時刻や話者をモデルから得たものではない。
@@ -54,9 +55,9 @@ export function connectStt({ emit, onReady, onError, onClose, onUsage = () => {}
   const ws = new WebSocketImpl('wss://api.openai.com/v1/realtime?intent=transcription', { headers: { Authorization: `Bearer ${keyFor('openai')}` }, handshakeTimeout: 10000 });
   let ready = false, closing = false, cancelled = false, failed = false, frames = 0, boundary = 0, pendingBytes = 0, hasSpeech = false, active = false, committedMs = 0;
   const inFlight = new Set();
-  let closeTimer;
-  const fail = message => { if (!failed && !cancelled) { failed = true; onError(new Error(message)); ws.terminate(); } };
-  const setupTimer = setTimeout(() => fail('OpenAI文字起こしの設定がタイムアウトしました。'), 12000);
+  let closeTimer, failureCategory;
+  const fail = (message, category) => { if (!failed && !cancelled) { failed = true; failureCategory = category; onError(new Error(message)); ws.terminate(); } };
+  const setupTimer = setTimeout(() => fail('OpenAI文字起こしの設定がタイムアウトしました。', 'setup_timeout'), 12000);
   function send(event) { ws.send(JSON.stringify(event)); }
   function commit() {
     if (!ready || pendingBytes < 4800 || !hasSpeech) return false;
@@ -76,24 +77,27 @@ export function connectStt({ emit, onReady, onError, onClose, onUsage = () => {}
     if (failed || cancelled) return;
     try {
       const event = JSON.parse(data.toString());
-      if (event.type === 'error' || event.type === 'conversation.item.input_audio_transcription.failed') { fail('OpenAI文字起こしに失敗しました。モデルの利用権限・残高を確認してください。'); return; }
+      if (event.type === 'error' || event.type === 'conversation.item.input_audio_transcription.failed') {
+        const category = sttFailureCategories.includes(event.error?.code) ? event.error.code : event.type.endsWith('.failed') ? 'transcription_failed' : 'api_error';
+        fail('OpenAI文字起こしに失敗しました。接続・利用設定を確認してください。', category); return;
+      }
       if (event.type === 'session.updated') { clearTimeout(setupTimer); ready = true; onReady(); }
       if (event.type === 'input_audio_buffer.committed') inFlight.add(event.item_id);
       assembler.consume(event);
       if (event.type === 'conversation.item.input_audio_transcription.completed') inFlight.delete(event.item_id);
       finishIfDone();
-    } catch { fail('OpenAI文字起こしの応答を処理できません。'); }
+    } catch { fail('OpenAI文字起こしの応答を処理できません。', 'protocol_error'); }
   });
-  ws.on('error', () => fail('OpenAI文字起こしへ接続できません。'));
+  ws.on('error', () => fail('OpenAI文字起こしへ接続できません。', 'connect_failed'));
   ws.on('close', () => {
     clearTimeout(setupTimer); clearTimeout(closeTimer);
     if(!failed&&!cancelled&&(!closing||assembler.pending.length>0||inFlight.size>0)){
-      failed=true;onError(new Error('音声認識が確定前に切断されました。記録に欠損の可能性があります。'));
+      failed=true;failureCategory='connection_closed';onError(new Error('音声認識が確定前に切断されました。記録に欠損の可能性があります。'));
     }
     const uploadedAudioSeconds = frames / 24000;
     onUsage({ provider: 'openai', kind: 'stt', model, uploadedAudioSeconds, committedAudioSeconds: committedMs / 1000,
       estimatedUsd: uploadedAudioSeconds / 60 * sttModels.find(m => m.model === model).usdPerMinute,
-      estimateBasis: '送信した音声時間×2026-10-08公開単価。請求額ではない', outcome: failed ? 'failed_billing_unknown' : 'closed' });
+      estimateBasis: '送信した音声時間×2026-10-08公開単価。請求額ではない', outcome: failed ? 'failed_billing_unknown' : 'closed', ...(failureCategory ? { failureCategory } : {}) });
     onClose();
   });
   return {
@@ -112,7 +116,7 @@ export function connectStt({ emit, onReady, onError, onClose, onUsage = () => {}
       if (closing) return;
       if (!ready) { closing = true; ws.terminate(); return; }
       active = false; commit(); closing = true;
-      closeTimer = setTimeout(() => fail('最後の文字起こしが時間内に確定しませんでした。'), 10000);
+      closeTimer = setTimeout(() => fail('最後の文字起こしが時間内に確定しませんでした。', 'finalize_timeout'), 10000);
       finishIfDone();
     },
     abort() { cancelled = true; closing = true; ws.terminate(); },

@@ -21,14 +21,18 @@ export function upsample(input){
 
 // Discordの「音声パケットを送信中」には無音も含まれる。再生の割り込みはPCMの音量で判定する。
 export class VoiceActivity {
-  constructor(onChange,{threshold=.006,startMs=60,endMs=300}={}){this.onChange=onChange;this.threshold=threshold;this.startMs=startMs;this.endMs=endMs;this.active=false;this.loudMs=0;this.quietMs=0;}
+  constructor(onChange,{threshold=.006,startMs=60,endMs=300,interruptMs=600,onInterrupt=()=>{}}={}){Object.assign(this,{onChange,threshold,startMs,endMs,interruptMs,onInterrupt});this.active=false;this.interrupted=false;this.loudMs=0;this.quietMs=0;this.voicedMs=0;}
   write(pcm){
     if(pcm.length%4)throw new Error('DiscordのPCMフレームが不正です。');
     if(!pcm.length)return;
     let energy=0;for(let i=0;i<pcm.length;i+=2){const value=pcm.readInt16LE(i)/32768;energy+=value*value;}
     const loud=Math.sqrt(energy/(pcm.length/2))>=this.threshold,ms=pcm.length/192;
-    if(loud){this.loudMs+=ms;this.quietMs=0;if(!this.active&&this.loudMs>=this.startMs){this.active=true;this.onChange(true);}}
-    else{this.loudMs=0;this.quietMs+=ms;if(this.active&&this.quietMs>=this.endMs){this.active=false;this.onChange(false);}}
+    if(loud){
+      this.loudMs+=ms;this.voicedMs+=ms;this.quietMs=0;
+      if(!this.active&&this.loudMs>=this.startMs){this.active=true;this.onChange(true);}
+      if(this.active&&!this.interrupted&&this.voicedMs>=this.interruptMs){this.interrupted=true;this.onInterrupt();}
+    }
+    else{this.loudMs=0;this.quietMs+=ms;if(!this.active)this.voicedMs=0;if(this.active&&this.quietMs>=this.endMs){this.active=false;this.interrupted=false;this.voicedMs=0;this.onChange(false);}}
   }
-  end(){if(this.active){this.active=false;this.onChange(false);}this.loudMs=0;this.quietMs=0;}
+  end(){if(this.active){this.active=false;this.onChange(false);}this.interrupted=false;this.loudMs=0;this.quietMs=0;this.voicedMs=0;}
 }

@@ -100,3 +100,12 @@ test('Discord用STTの呼称ヒントを送信し、Whisperへ未対応promptを
  assert.equal(transcriptionConfig('gpt-realtime-whisper',{prompt}).session.audio.input.transcription.prompt,undefined);
  assert.throws(()=>transcriptionConfig('gpt-transcribe',{prompt:'a'.repeat(1001)}));
 });
+
+test('STT失敗の種別だけを使用量へ残し、生のエラー本文を保存しない',async()=>{
+  for(const [code,expected] of [['rate_limit_exceeded','rate_limit_exceeded'],['secret upstream message','api_error']]){
+    const usage=[];const c=connectStt({emit:()=>{},onReady:()=>{},onError:()=>{},onClose:()=>{},onUsage:u=>usage.push(u),WebSocketImpl:FakeSocket});
+    const ws=FakeSocket.last;await new Promise(r=>queueMicrotask(r));ws.message({type:'session.updated'});
+    ws.message({type:'error',error:{code,message:'private upstream text'}});
+    assert.equal(usage[0].failureCategory,expected);assert.ok(!JSON.stringify(usage).includes('private'));c.abort();
+  }
+});

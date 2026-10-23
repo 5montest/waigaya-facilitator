@@ -4,7 +4,7 @@ import { upsample } from './audio.js';
 
 export class DiscordPlayback {
   constructor(bridge,{onFailure=()=>{}}={}){
-    this.bridge=bridge;this.onFailure=onFailure;this.epoch=null;this.startedAt=null;this.finished=false;this.minimumEpoch=0;this.speaking=false;
+    this.bridge=bridge;this.onFailure=onFailure;this.epoch=null;this.startedAt=null;this.finished=false;this.minimumEpoch=0;
     this.player=createAudioPlayer({behaviors:{noSubscriber:NoSubscriberBehavior.Stop}});
     this.player.on(AudioPlayerStatus.Playing,()=>{
       if(this.epoch===null)return;this.startedAt??=Date.now();this.progress();
@@ -20,7 +20,7 @@ export class DiscordPlayback {
   consume(event){
     try{
       if(event.type==='tts_start'){
-        if(this.speaking||this.bridge.state?.speaking||event.epoch<this.minimumEpoch||this.bridge.state?.playback?.epoch!==event.epoch||this.bridge.state?.outputEpoch!==event.epoch)return;
+        if(event.epoch<this.minimumEpoch||this.bridge.state?.playback?.epoch!==event.epoch||this.bridge.state?.outputEpoch!==event.epoch)return;
         this.stop();this.epoch=event.epoch;this.stream=new PassThrough();this.stream.on('error',()=>{});this.totalBytes=0;
         this.player.play(createAudioResource(this.stream,{inputType:StreamType.Raw}));
       }else if(event.type==='tts_chunk'&&event.epoch===this.epoch){
@@ -34,6 +34,6 @@ export class DiscordPlayback {
     if(notify){this.minimumEpoch=Math.max(this.minimumEpoch,(this.bridge.state?.outputEpoch??0)+2);this.bridge.send({type:'stop',reason});}
     this.epoch=null;this.startedAt=null;this.finished=false;clearInterval(this.timer);this.stream?.destroy();this.stream=null;this.player.stop(true);
   }
-  speech(active){this.speaking=active;if(active)this.stop(true,'human_speaking');}
+  speech(active,{interrupt=true}={}){if(active&&interrupt)this.stop(true,'human_speaking');}
   close(){this.stop(true);this.bridge.off('audio',this.onAudio);this.bridge.off('state',this.onState);}
 }

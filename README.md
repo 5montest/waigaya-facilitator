@@ -76,6 +76,7 @@ npm audit --omit=dev
 
 | 内容 | 資料 |
 |---|---|
+| 2026年10月23日の修正案評価・音声中断対策・費用の訂正 | [レビューと改善](docs/review-20261023.md) |
 | 固定運用・声の呼びかけ・公開・権限 | [Discord版の仕様](discord-spec.md) |
 | 固定設定、権限、導入・バックアップ・ロールバック | [Discord設定手順](discord-setup.md) |
 | 今回の変更と制約 | [改善レポート](docs/improvement-report.md) |

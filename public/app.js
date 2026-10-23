@@ -74,7 +74,7 @@ function render(next) {
     const row = displayText($('notes'), 'div', n.text, 'note'); displayText(row, 'small', { idea: '案', difference: '意見の違い', open_issue: '未決の論点' }[n.kind]); displayText(row, 'small', '根拠：' + evidenceText(n.evidence));
   } else displayText($('notes'), 'p', 'まだありません。', 'hint');
   const sums = state.usage.filter(u => typeof u.estimatedUsd === 'number');
-  $('usage').textContent = `LLM ${state.usage.filter(u => u.model && !u.kind).length}回 · 概算 $${sums.reduce((s,u) => s + u.estimatedUsd, 0).toFixed(5)}。音声生成・使用量不明の処理・税は含みません。`;
+  $('usage').textContent = `LLM ${state.usage.filter(u => u.model && !u.kind).length}回 · 概算 $${sums.reduce((s,u) => s + u.estimatedUsd, 0).toFixed(5)}。音声生成・費用未算定の処理・税は含みません。`;
   $('decisions').replaceChildren(); for (const d of state.decisions) { const row = displayText($('decisions'), 'div', d.text, 'decision'); const stale = !d.evidence.every(r => state.utterances.some(u => u.final && u.id === r.utteranceId && u.revision === r.revision)); displayText(row, 'small', stale ? '根拠発言が更新されています：要再確認' : '操作担当者が確認'); }
   if (!state.decisions.length) displayText($('decisions'), 'p', 'まだありません。', 'hint');
   const selectedRef = $('decisionRef').value; $('decisionRef').replaceChildren();

@@ -112,3 +112,14 @@ test('Discordで会話が続いても検討を完了し、発話終了後にボ�
     assert.deepEqual(failures,[]);
   }finally{await bridge.close();await second?.close();await app.close();if(key===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=key;}
 });
+
+test('VADは60msで検知し、短い相槌は中断せず、短い間を含む600msの発声で一度だけ割り込む',()=>{
+  const changes=[];let interrupts=0;
+  const activity=new VoiceActivity(active=>changes.push(active),{onInterrupt:()=>interrupts++});
+  const frame=Buffer.alloc(3840);for(let i=0;i<frame.length;i+=2)frame.writeInt16LE(8000,i);
+  const loud=n=>{for(let i=0;i<n;i++)activity.write(frame);};
+  const quiet=n=>{for(let i=0;i<n;i++)activity.write(Buffer.alloc(3840));};
+  loud(3);assert.deepEqual(changes,[true]);loud(7);quiet(15);assert.equal(interrupts,0);assert.deepEqual(changes,[true,false]);
+  loud(15);quiet(5);loud(14);assert.equal(interrupts,0);loud(1);assert.equal(interrupts,1);loud(40);assert.equal(interrupts,1);
+  activity.end();loud(30);assert.equal(interrupts,2);activity.end();
+});

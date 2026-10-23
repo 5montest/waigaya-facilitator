@@ -52,8 +52,13 @@ test('固定運用: 質問が後続発言で解消されると旧生成を取消
  const pending=[];const r=await fixedFixture({modelAnalyze:args=>new Promise(resolve=>{pending.push({args,resolve});if(pending.length>1)resolve({result:{action:'hold',text:'',reason:'後続発言で解消済み',evidence:[],notes:[]},usage:{}});})});try{await r.action('start');const id=await r.emit('ワイガヤ、設定にどれくらい掛かった？');await waitFor(()=>pending.length===1);await r.emit('設定には前回半日かかりました。');await waitFor(()=>pending.length===2);assert.equal(pending[0].args.signal.aborted,true);assert.ok(pending[1].args.state.utterances.some(u=>u.text.includes('半日')));pending[0].resolve({result:{action:'question',text:'具体的には？',reason:'古い依頼',evidence:[{utteranceId:id,revision:1}],notes:[]},usage:{}});await r.runtime.meeting.addressing.running;assert.equal(r.tts.length,0);assert.equal(r.created.length,0);
  }finally{for(const p of pending)p.resolve({result:{action:'hold',text:'',reason:'中止',evidence:[],notes:[]},usage:{}});await r.close();}
 });
-test('固定運用: AI再生中の発話は即時停止し、後着TTS片を捨てて自動再開しない',async()=>{
- const r=await fixedFixture({holdTts:true});try{await r.action('start');await r.emit('ワイガヤ、まとめて');await waitFor(()=>r.tts.length===1&&r.runtime.meeting.playback.epoch!==null);const current=r.runtime.meeting,oldEpoch=current.playback.epoch;await r.capture();assert.equal(current.playback.epoch,null);r.tts[0].onChunk(Buffer.alloc(960));r.tts[0].onDone();await new Promise(done=>setTimeout(done,30));assert.equal(current.playback.epoch,null);assert.ok((await r.state()).outputEpoch>oldEpoch);assert.ok((await r.state()).aiTurns.some(t=>t.outcome==='human_speaking'));
+test('固定運用: 短い相槌と遅着STTでは音声を切らず、長い割込みで停止して後着TTSを捨てる',async()=>{
+ const r=await fixedFixture({holdTts:true});try{await r.action('start');await r.emit('ワイガヤ、まとめて');await waitFor(()=>r.tts.length===1&&r.runtime.meeting.playback.epoch!==null);const current=r.runtime.meeting,oldEpoch=current.playback.epoch;
+  await r.capture();await waitFor(()=>current.bridge.state.speaking);assert.equal(current.playback.epoch,oldEpoch);
+  r.tts[0].onChunk(Buffer.alloc(960));await waitFor(()=>current.playback.totalBytes===960);
+  await current.bridge.enqueue({type:'utterance',utterance:{id:'delayed',text:'再生前の補足が遅れて確定しました。',final:true,source:'discord'}});assert.equal(current.playback.epoch,oldEpoch);
+  await r.capture(ids.owner,{frames:30});await waitFor(()=>current.playback.epoch===null);
+  r.tts[0].onChunk(Buffer.alloc(960));r.tts[0].onDone();await new Promise(done=>setTimeout(done,30));assert.equal(current.playback.epoch,null);assert.ok((await r.state()).outputEpoch>oldEpoch);assert.ok((await r.state()).aiTurns.some(t=>t.outcome==='human_speaking'));
  }finally{await r.close();}
 });
 test('固定運用: Bot自身・エコー・入力障害・人間0人で呼びかけ経路を起動しない',async()=>{
@@ -94,4 +99,21 @@ test('固定運用: 自動投稿成功後のDB結果保存失敗は要照合と�
 test('固定運用: 声の依頼後に補足が増えても最新文脈で一回再検討し、未解決の直接質問へ回答する',async()=>{
  const pending=[];const r=await fixedFixture({modelAnalyze:args=>new Promise(resolve=>{pending.push({args,resolve});if(pending.length>1)resolve({result:{action:'summary',text:'コネクタ案は取り違えの予防に向きます。',reason:'補足を含めた直接回答',evidence:[{utteranceId:args.state.request.voiceRequest.utteranceId,revision:1}],notes:[]},usage:{}});})});try{await r.action('start');const id=await r.emit('Yガヤ、二つの案を比較して');await waitFor(()=>pending.length===1);await r.emit('ちなみに対象はブロワーの配線です。');await waitFor(()=>pending.length===2);assert.equal(pending[0].args.signal.aborted,true);assert.ok(pending[1].args.state.utterances.some(u=>u.text.includes('ブロワー')));await waitFor(()=>r.tts.length===1);pending[0].resolve({result:{action:'summary',text:'古い返答です。',reason:'取消対象',evidence:[{utteranceId:id,revision:1}],notes:[]},usage:{}});await new Promise(done=>setTimeout(done,30));assert.equal(r.tts.length,1);assert.equal(pending.length,2);
  }finally{for(const p of pending)p.resolve({result:{action:'hold',text:'',reason:'中止',evidence:[],notes:[]},usage:{}});await r.close();}
+});
+
+test('固定運用: 補足による再検討は一回までとし、さらに会話が続いても二回目の生成を完了できる',async()=>{
+ const pending=[];const r=await fixedFixture({modelAnalyze:args=>new Promise(resolve=>pending.push({args,resolve}))});
+ try{
+  await r.action('start');await r.emit('ワイガヤ、二つの案を比較して');await waitFor(()=>pending.length===1);
+  await r.emit('補足として配線の変更しやすさを比べたいです。');await waitFor(()=>pending.length===2);
+  assert.equal(pending[0].args.signal.aborted,true);assert.equal(pending[1].args.state.request.contextLocked,true);
+  await r.emit('それぞれの費用も気になります。');await r.emit('作業時間は後で測ります。');
+  assert.equal(pending[1].args.signal.aborted,false);assert.equal(pending.length,2);
+  const q=pending[1].args.state.request.voiceRequest;
+  pending[1].resolve({result:{action:'summary',reason:'補足を含む比較',text:'配線の変更しやすさで案を比較します。',evidence:[{utteranceId:q.utteranceId,revision:q.revision}],notes:[]},usage:{}});
+  await waitFor(()=>r.tts.length===1);assert.equal(pending.length,2);
+ }finally{
+  for(const p of pending)p.resolve({result:{action:'hold',text:'',reason:'終了',evidence:[],notes:[]},usage:{}});
+  await r.close();
+ }
 });

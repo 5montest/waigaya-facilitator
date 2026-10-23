@@ -61,8 +61,11 @@ export class VoiceAddressing {
         if(abort.signal.aborted)continue;
         for(let attempt=0;attempt<2;attempt++){
           if(abort.signal.aborted||!voiceEligible(this.current,request.userId))break;
+          // 文字起こし確定直後の補足を待ち、短い発言ごとの生成・取消しを減らす。
+          await this.current.bridge.waitFor(s=>!s.inputHealthy||!s.speaking&&this.clock()-s.lastVoiceAt>=600,10000,{signal:abort.signal});
+          if(abort.signal.aborted||!voiceEligible(this.current,request.userId))break;
           const canRefresh=()=>{const s=this.current.bridge.state,u=s.utterances?.find(u=>u.id===request.utteranceId);return attempt===0&&!abort.signal.aborted&&!this.pending&&voiceEligible(this.current,request.userId)&&s.request?.status==='needs_refresh'&&s.request.invalidatedBy==='new_utterance'&&u?.revision===request.revision;};
-          const answer=await this.current.bridge.ask({voiceRequest:request,signal:abort.signal});
+          const answer=await this.current.bridge.ask({voiceRequest:request,contextLocked:attempt>0,signal:abort.signal});
           if(canRefresh())continue;
           if(abort.signal.aborted||!voiceEligible(this.current,request.userId))break;
           if(answer.request?.status==='failed')throw new Error('voice_generation_failed');
@@ -74,7 +77,7 @@ export class VoiceAddressing {
         if(request.briefOperation&&!abort.signal.aborted&&voiceInputEligible(this.current,request.userId)&&(this.lastErrorAt===null||this.clock()-this.lastErrorAt>=60000)){
           this.lastErrorAt=this.clock();await this.onBriefNotice(request.briefOperation==='watch_on'&&!currentBrief(s)?'先に「ワイガヤ、今日の目的は…」と本筋を指定してください。':'本筋の設定・確認を完了できませんでした。/waigaya status で記録状態を確認してください。').catch(()=>{});
         }else if(!abort.signal.aborted&&voiceEligible(this.current,request.userId)&&!['needs_refresh','dismissed'].includes(s.request?.status)&& (this.lastErrorAt===null||this.clock()-this.lastErrorAt>=60000)){
-          this.lastErrorAt=this.clock();await this.onFailure().catch(()=>{});
+          this.lastErrorAt=this.clock();await Promise.resolve().then(()=>this.onFailure()).catch(()=>{});
         }
       }finally{this.current.voiceAsking=false;if(this.active===abort){this.active=null;this.activeRequest=null;}}
     }

@@ -1,4 +1,4 @@
-import { UserError as Error, UserError } from './errors.js';
+import { UserError as Error } from './errors.js';
 import Ajv from 'ajv';
 import { createHash } from 'node:crypto';
 import { currentBrief } from './meeting-brief.js';
@@ -46,13 +46,13 @@ export const catalog = [
   { provider: 'anthropic', model: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', input: 1, output: 5 },
   { provider: 'anthropic', model: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', input: 2, output: 10 },
   { provider: 'deepseek', model: 'deepseek-flash', label: 'DeepSeek Flash', input: .30, output: 1.20 },
-  // 議事録生成用：ローカルのAnthropic互換ブリッジ経由のGLM。公開課金レートは無いので単価0。
-  { provider: 'glm', model: 'glm-5.3-flash', label: 'GLM-5.3-Flash（ローカルブリッジ）', input: 0, output: 0 },
+  // ローカルなのは中継。上流の契約・従量課金を確認できないため、費用は未算定とする。
+  { provider: 'glm', model: 'glm-5.3-flash', label: 'GLM-5.3-Flash（ブリッジ経由）', input: null, output: null },
 ];
 export function keyFor(provider) {
-  return { google: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY, openai: process.env.OPENAI_API_KEY, anthropic: process.env.ANTHROPIC_API_KEY, deepseek: process.env.DEEPSEEK_API_KEY, glm: process.env.ANTHROPIC_API_KEY || process.env.OPENCODE_GO_API_KEY }[provider];
+  return { google: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY, openai: process.env.OPENAI_API_KEY, anthropic: process.env.ANTHROPIC_API_KEY, deepseek: process.env.DEEPSEEK_API_KEY, glm: process.env.WAIGAYA_GLM_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.OPENCODE_GO_API_KEY }[provider];
 }
-export const glmEndpoint = () => `${(process.env.ANTHROPIC_BASE_URL || 'http://127.0.0.1:7684').replace(/\/+$/, '')}/v1/messages`;
+export const glmEndpoint = () => `${(process.env.WAIGAYA_GLM_BASE_URL || process.env.ANTHROPIC_BASE_URL || 'http://127.0.0.1:7684').replace(/\/+$/, '').replace(/\/v1$/, '')}/v1/messages`;
 export function parseResult(text, state) {
   let result;
   try { result = JSON.parse(text); } catch { throw new Error('モデルの出力がJSONではありません。'); }
@@ -160,8 +160,8 @@ export async function analyze({ provider, model, state, requestedReply = false, 
   }
   const rates = provider === 'google' && model === 'gemini-3.8-flash' && Date.now() >= Date.parse('2027-01-01T00:00:00Z') ? { input: 1.5, output: 7.5 } : selected;
   const usage = { provider, model, elapsedMs: Math.round(performance.now() - start), inputTokens: inTokens ?? null, outputTokens: outTokens ?? null, cachedTokens: cached, thoughtTokens: provider === 'google' ? raw.usage?.total_thought_tokens ?? null : null,
-    estimatedUsd: Number.isFinite(inTokens) && Number.isFinite(outTokens) && !cached ? (inTokens * rates.input + outTokens * rates.output) / 1e6 : null,
-    estimateBasis: provider === 'glm' ? 'ローカルブリッジ経由、追加のAPI課金なし' : provider === 'deepseek' ? '2026-10-07公開繁忙時間料金、請求額ではない' : '2026-10-07公開料金、請求額ではない' };
+    estimatedUsd: Number.isFinite(inTokens) && Number.isFinite(outTokens) && Number.isFinite(rates.input) && Number.isFinite(rates.output) && !cached ? (inTokens * rates.input + outTokens * rates.output) / 1e6 : null,
+    estimateBasis: provider === 'glm' ? 'ブリッジ上流の契約・請求額は未確認。費用未算定' : provider === 'deepseek' ? '2026-10-07公開繁忙時間料金、請求額ではない' : '2026-10-07公開料金、請求額ではない' };
   try {
     const result=parseResult(expandReferences(text, aliases), state);
     if(scopeOnly&&(result.action==='question'||result.text.length>120||result.notes.length))throw new Error('脱線通知には短い整理かholdだけを使います。');
