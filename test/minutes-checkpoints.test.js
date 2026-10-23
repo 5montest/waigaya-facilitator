@@ -67,11 +67,14 @@ test('発言訂正は該当分割と統合だけを再生成し、summary・会�
  } finally {store.close();}
 });
 test('不正な根拠の出力はチェックポイントへ保存せず、abort後は追加APIを呼ばない',async()=>{
+ // 検証失敗は上限2回まで同じ入力でやり直す。失敗したワーカーは残りチャンクを
+ // 実行せず中断するため、2並列×3試行=6呼び出し。
+ // 再試行中も不正な結果は保存されず、abort後は追加APIを呼ばない。
  const store=new Store(':memory:'),s=state();let saves=0,calls=0;
  const generator=new MinutesGenerator({chunkLimit:700,generate:async({input})=>{calls++;const r=response(input);r.result.overview[0].evidence[0].revision=999;return r;}});
  try {
   await assert.rejects(generator.generateDraft(s,{checkpoints:{...cache(store,s.id),save:()=>{saves++;}}}),/根拠/);assert.equal(saves,0);
-  const abort=new AbortController();abort.abort();await assert.rejects(generator.generateDraft(s,{signal:abort.signal}));assert.equal(calls,1);
+  const abort=new AbortController();abort.abort();await assert.rejects(generator.generateDraft(s,{signal:abort.signal}));assert.equal(calls,6);
  }finally{store.close();}
 });
 test('保存失敗を成功と扱わず、進捗は完了件数を増やさない',async()=>{

@@ -46,10 +46,13 @@ export const catalog = [
   { provider: 'anthropic', model: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', input: 1, output: 5 },
   { provider: 'anthropic', model: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', input: 2, output: 10 },
   { provider: 'deepseek', model: 'deepseek-flash', label: 'DeepSeek Flash', input: .30, output: 1.20 },
+  // 議事録生成用：ローカルのAnthropic互換ブリッジ経由のGLM。公開課金レートは無いので単価0。
+  { provider: 'glm', model: 'glm-5.3-flash', label: 'GLM-5.3-Flash（ローカルブリッジ）', input: 0, output: 0 },
 ];
 export function keyFor(provider) {
-  return { google: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY, openai: process.env.OPENAI_API_KEY, anthropic: process.env.ANTHROPIC_API_KEY, deepseek: process.env.DEEPSEEK_API_KEY }[provider];
+  return { google: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY, openai: process.env.OPENAI_API_KEY, anthropic: process.env.ANTHROPIC_API_KEY, deepseek: process.env.DEEPSEEK_API_KEY, glm: process.env.ANTHROPIC_API_KEY || process.env.OPENCODE_GO_API_KEY }[provider];
 }
+export const glmEndpoint = () => `${(process.env.ANTHROPIC_BASE_URL || 'http://127.0.0.1:7684').replace(/\/+$/, '')}/v1/messages`;
 export function parseResult(text, state) {
   let result;
   try { result = JSON.parse(text); } catch { throw new Error('モデルの出力がJSONではありません。'); }
@@ -115,6 +118,12 @@ export async function analyze({ provider, model, state, requestedReply = false, 
     headers['x-api-key'] = key;
     headers['anthropic-version'] = '2023-06-01';
     body = { model, max_tokens: 2400, system: instructions, messages: [{ role: 'user', content: input }], output_config: { format: { type: 'json_schema', schema } } };
+  } else if (provider === 'glm') {
+    // ローカルのAnthropic互換ブリッジ。json_schema出力に非対応なので指示＋検証で整える。
+    url = glmEndpoint();
+    headers['x-api-key'] = key;
+    headers['anthropic-version'] = '2023-06-01';
+    body = { model, max_tokens: 4000, system: instructions + '\nJSON Schema: ' + JSON.stringify(schema), messages: [{ role: 'user', content: input }] };
   } else {
     url = 'https://api.deepseek.com/chat/completions';
     headers.authorization = `Bearer ${key}`;
@@ -137,8 +146,9 @@ export async function analyze({ provider, model, state, requestedReply = false, 
     text = (raw.output ?? []).flatMap(o => o.type === 'message' ? o.content ?? [] : []).filter(c => c.type === 'output_text').map(c => c.text).join('');
     inTokens = raw.usage?.input_tokens; outTokens = raw.usage?.output_tokens;
     cached = raw.usage?.input_tokens_details?.cached_tokens ?? 0;
-  } else if (provider === 'anthropic') {
-    if (raw.stop_reason !== 'end_turn') throw new Error('Claudeの生成が完了しませんでした。');
+  } else if (provider === 'anthropic' || provider === 'glm') {
+    if (raw.stop_reason !== 'end_turn') throw new Error(`${provider === 'glm' ? 'GLM' : 'Claude'}の生成が完了しませんでした。`);
+    // thinkingブロックを除き本文のみ連結する。
     text = (raw.content ?? []).filter(c => c.type === 'text').map(c => c.text).join('');
     inTokens = raw.usage?.input_tokens; outTokens = raw.usage?.output_tokens;
     cached = (raw.usage?.cache_read_input_tokens ?? 0) + (raw.usage?.cache_creation_input_tokens ?? 0);
@@ -151,7 +161,7 @@ export async function analyze({ provider, model, state, requestedReply = false, 
   const rates = provider === 'google' && model === 'gemini-3.8-flash' && Date.now() >= Date.parse('2027-01-01T00:00:00Z') ? { input: 1.5, output: 7.5 } : selected;
   const usage = { provider, model, elapsedMs: Math.round(performance.now() - start), inputTokens: inTokens ?? null, outputTokens: outTokens ?? null, cachedTokens: cached, thoughtTokens: provider === 'google' ? raw.usage?.total_thought_tokens ?? null : null,
     estimatedUsd: Number.isFinite(inTokens) && Number.isFinite(outTokens) && !cached ? (inTokens * rates.input + outTokens * rates.output) / 1e6 : null,
-    estimateBasis: provider === 'deepseek' ? '2026-10-07公開繁忙時間料金、請求額ではない' : '2026-10-07公開料金、請求額ではない' };
+    estimateBasis: provider === 'glm' ? 'ローカルブリッジ経由、追加のAPI課金なし' : provider === 'deepseek' ? '2026-10-07公開繁忙時間料金、請求額ではない' : '2026-10-07公開料金、請求額ではない' };
   try {
     const result=parseResult(expandReferences(text, aliases), state);
     if(scopeOnly&&(result.action==='question'||result.text.length>120||result.notes.length))throw new Error('脱線通知には短い整理かholdだけを使います。');

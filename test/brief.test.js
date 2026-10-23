@@ -50,7 +50,7 @@ test('声で本筋を設定し短く確認、後の質問と正式議事録へ�
   const saved=s.utterances.find(u=>u.id===id);r.runtime.meeting.addressing.observe(saved,ids.owner);assert.equal(r.tts.length,1);
   await r.emit('ワイガヤ、A案とB案の違いを教えて');await waitFor(()=>r.requests.length===1);await waitFor(()=>!r.runtime.meeting.voiceAsking);
   assert.equal(r.requests[0].voiceRequest.briefOperation,undefined);const input=JSON.parse(conversationInput(await r.state()).input);assert.match(input.meetingBrief.text,/作業時間/);
-  await r.action('end');s=await r.complete();assert.match(r.generated[0].meetingBrief.text,/配線方式/);assert.match(minutesMarkdown(s),new RegExp(id+'@1'));assert.equal(s.decisions.length,0);assert.equal(s.minutesHistory[0].approvedAt,null);
+  await r.action('end');s=await r.complete();assert.match(r.generated[0].meetingBrief.text,/配線方式/);assert.match(minutesMarkdown(s),/配線方式を決める/);assert.doesNotMatch(minutesMarkdown(s),new RegExp(id+'@1'));assert.equal(s.decisions.length,0);assert.equal(s.minutesHistory[0].approvedAt,null);
  }finally{await r.close();}
 });
 

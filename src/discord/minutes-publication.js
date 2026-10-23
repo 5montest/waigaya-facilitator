@@ -35,7 +35,7 @@ export function shortMinutes(state,version) {
     if(lines.join('\n').length+block.length<=1450)lines.push(block);
   }
   if(!version.confirmedDecisions?.length)lines.push('\n確認済みの決定はありません。');
-  lines.push('\n'+(version.approvedAt?'操作担当者が確認した版です。参加者全員の合意を保証するものではありません。':'AIによる下書きです。内容・参加者の合意は未確認です。'),'詳細・根拠・記録欠損の注記は添付のMarkdownをご覧ください。');
+  lines.push('\n'+(version.approvedAt?'操作担当者が確認済みの版です。':'AIによる下書きです。内容・参加者の合意は未確認です。'),'詳細は添付のMarkdownをご覧ください。');
   return lines.join('\n');
 }
 export function resolveTags(channel,bot,{reviewed=true}={}) {
