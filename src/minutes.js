@@ -1,6 +1,6 @@
 import { UserError as Error } from './errors.js';
 import Ajv from 'ajv';
-import { glmEndpoint, keyFor } from './models.js';
+import { minutesEndpoint, minutesKey, minutesModel, minutesEffort, minutesRates, minutesEstimateBasis } from './models.js';
 import { currentBrief } from './meeting-brief.js';
 import { createHash } from 'node:crypto';
 
@@ -44,11 +44,11 @@ overviewは短い概要、ideasは案、comparisonsは違いや条件、openIssu
 会話がなければ全配列を空にします。入力の途中要約も未承認です。
 部分的な入力では、その部分で意味のある項目だけを短く書きます。項目数を稼ぐための細切れ・重複は不要です。
 根拠は入力に示された発言idとrevisionをそのまま一対で書き、存在しないid・revisionを作らないでください。指定JSONのみを返します。`;
-export async function structuredMinutes({ input, model = 'glm-5.3-flash', signal, fetchImpl = fetch }) {
-  const key = keyFor('glm'); if (!key) throw new Error('議事録用AIのキーが未設定です。');
+export async function structuredMinutes({ input, model = minutesModel(), signal, fetchImpl = fetch }) {
+  const key = minutesKey(); if (!key) throw new Error('議事録用AIのキーが未設定です。');
   const started = performance.now();
-  // 中継の先では外部サービスが推論する。費用は契約を確認するまで未算定。
-  const response = await fetchImpl(glmEndpoint(), { method: 'POST',
+  // 中継の先では外部サービスが推論する。費用は公開単価からの概算で、請求額ではない。
+  const response = await fetchImpl(minutesEndpoint(), { method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({ model, max_tokens: 24000, system: prompt + '\nJSON Schema: ' + JSON.stringify(minutesSchema),
       messages: [{ role: 'user', content: JSON.stringify(input) }] }),
@@ -56,8 +56,10 @@ export async function structuredMinutes({ input, model = 'glm-5.3-flash', signal
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(360000)]) : AbortSignal.timeout(360000) });
   if (!response.ok) throw new Error(`議事録AI: HTTP ${response.status}（接続・利用設定を確認してください）`);
   const raw = await response.json();
-  const usage = { provider: 'glm', model, kind: 'minutes', inputTokens: raw.usage?.input_tokens ?? null, outputTokens: raw.usage?.output_tokens ?? null,
-    elapsedMs: Math.round(performance.now() - started), estimatedUsd: null, estimateBasis: 'ブリッジ上流の契約・請求額は未確認。費用未算定' };
+  const inputTokens = raw.usage?.input_tokens ?? null, outputTokens = raw.usage?.output_tokens ?? null;
+  const usage = { provider: 'deepseek', model, kind: 'minutes', inputTokens, outputTokens,
+    estimatedUsd: Number.isFinite(inputTokens) && Number.isFinite(outputTokens) ? (inputTokens * minutesRates.input + outputTokens * minutesRates.output) / 1e6 : null,
+    elapsedMs: Math.round(performance.now() - started), estimateBasis: minutesEstimateBasis };
   if (raw.stop_reason !== 'end_turn') {
     // 出力上限での途切れは書き直せば収まる可能性があるため、検証系の失敗として再試行する。
     const e = new Error(raw.stop_reason === 'max_tokens' ? '議事録の出力が長すぎて途切れました。各textをもっと短く書いてください。' : '議事録の生成が完了しませんでした。');
@@ -83,7 +85,7 @@ export function splitChunks(items, limit = 24000) {
 }
 export class MinutesGenerator {
   // 大きすぎるチャンクは思考トークンで出力上限を消費しJSONが途切れるため、控えめに分割する。
-  constructor({ generate = structuredMinutes, chunkLimit = 24000, model = 'glm-5.3-flash' } = {}) { this.generate = generate; this.chunkLimit = chunkLimit; this.model = model; }
+  constructor({ generate = structuredMinutes, chunkLimit = 24000, model = minutesModel() } = {}) { this.generate = generate; this.chunkLimit = chunkLimit; this.model = model; }
   async generateDraft(state, { signal, onUsage = () => {}, checkpoints, kind = 'minutes', onProgress = () => {} } = {}) {
     const list = state.utterances.filter(u => u.final && u.source !== 'ai');
     // UUIDをそのまま渡すと1会議で20万トークン超になるため、この依頼に限った略記IDへ詰める。
@@ -118,7 +120,7 @@ export class MinutesGenerator {
           response = await this.generate({ input: attempt ? { ...input, validationError: `${lastError.message}。根拠には入力の発言idとrevisionをそのまま使ってください。存在しないidは参照しないでください。各textは短く簡潔に書いてください。` } : input, model: this.model, signal });
         }
         catch (e) {
-          onUsage(e.usage ?? { provider: 'glm', model: this.model, kind: 'minutes', outcome: 'failed_billing_unknown', estimatedUsd: null });
+          onUsage(e.usage ?? { provider: 'deepseek', model: this.model, kind: 'minutes', outcome: 'failed_billing_unknown', estimatedUsd: null });
           if (!e.validation) throw e; lastError = e; continue;
         }
         onUsage(response.usage);
@@ -150,7 +152,7 @@ export class MinutesGenerator {
     };
     let drafts = await stage(splitChunks(utterances, this.chunkLimit).map(utterances => ({ utterances })), 'source');
     // Hierarchical integration keeps original references and never removes the SQLite transcript.
-    // 統合段の入力も短縮IDへ戻す。展開済みのUUIDをGLMに正確に写させるのは幻覚の温床になる。
+    // 統合段の入力も短縮IDへ戻す。展開済みのUUIDをモデルに正確に写させるのは幻覚の温床になる。
     const reverse = new Map([...aliases].map(([alias, id]) => [id, alias]));
     for (let depth = 0; drafts.length > 1; depth++) {
       if (depth >= 8) throw new Error('議事録の統合が収束しません。原本を保持して停止しました。');

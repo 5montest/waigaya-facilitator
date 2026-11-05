@@ -186,7 +186,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
           void current.grace.members(humanCount(channel));
           if(next.channelId===current.channelId&&old.channelId!==next.channelId&&!next.member?.user.bot){
             void bridge.enqueue({type:'participant',userId:next.id}).catch(()=>{});
-            void notifyOwner({...bridge.state,ownerId:next.id},'この通話では会議の記録を管理しています。/waigaya status で記録中・一時停止を確認できます。記録中の音声はOpenAIへ、議事録生成時の文字起こしはGLM接続先へ送ります。文字起こし・議事録はホストへ保存し、元音声は保存しません。'+(config.fixed?`終了後は <#${config.fixed.minutesForumId}> の閲覧者へAI生成・未確認の議事録を自動公開します。`:''));
+            void notifyOwner({...bridge.state,ownerId:next.id},'この通話では会議の記録を管理しています。/waigaya status で記録中・一時停止を確認できます。記録中の音声はOpenAIへ、議事録生成時の文字起こしはDeepSeek V4.1 Flashの接続先へ送ります。文字起こし・議事録はホストへ保存し、元音声は保存しません。'+(config.fixed?`終了後は <#${config.fixed.minutesForumId}> の閲覧者へAI生成・未確認の議事録を自動公開します。`:''));
           }
         }
       };
@@ -218,7 +218,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
     if(!permissions?.has([PermissionFlagsBits.ViewChannel,PermissionFlagsBits.Connect]))throw new Error('会議のチャンネルを閲覧・接続する権限が必要です。');
     if(outputChannelId===undefined)outputChannelId=(await service.api(`/api/guilds/${config.guildId}/settings`)).defaultMinutesChannelId;
     if(outputChannelId){let target;try{target=await interaction.guild.channels.fetch(outputChannelId);}catch{throw new Error('保存先を取得できません。管理者が導入設定とチャンネル権限を確認してください。');}requireOutput(target,interaction.member,interaction.guild.members.me);}
-    const notice = config.fixed?`会議を記録します。${mode==='minutes'?'AI音声は停止しています。':'ワイガヤと呼びかけると音声で返答します。'}音声はOpenAIへ、議事録生成時の文字起こしはGLM接続先へ送ります。原音声は保存せず文字起こしを保持します。全員退出後に自動終了し、${config.fixed.autoPublish?`<#${outputChannelId}> を閲覧できる全員へAI生成・未確認の議事録を自動公開します。`:'議事録を非公開保存します。'}`:`記録を開始します。モード：${modes[mode]}。音声はOpenAIへ、議事録生成時の文字起こしはGLM接続先へ送信。文字起こし・下書きはホストに保存。元音声は保存しません。公開先：${outputChannelId?`<#${outputChannelId}>（人が確認・公開操作するまで本文投稿なし）`:'未指定・本文の自動公開なし'}。`;
+    const notice = config.fixed?`会議を記録します。${mode==='minutes'?'AI音声は停止しています。':'ワイガヤと呼びかけると音声で返答します。'}音声はOpenAIへ、議事録生成時の文字起こしはDeepSeek V4.1 Flashの接続先へ送ります。原音声は保存せず文字起こしを保持します。全員退出後に自動終了し、${config.fixed.autoPublish?`<#${outputChannelId}> を閲覧できる全員へAI生成・未確認の議事録を自動公開します。`:'議事録を非公開保存します。'}`:`記録を開始します。モード：${modes[mode]}。音声はOpenAIへ、議事録生成時の文字起こしはDeepSeek V4.1 Flashの接続先へ送信。文字起こし・下書きはホストに保存。元音声は保存しません。公開先：${outputChannelId?`<#${outputChannelId}>（人が確認・公開操作するまで本文投稿なし）`:'未指定・本文の自動公開なし'}。`;
     const announced=notice+(purpose?`\n本筋：${safeText(purpose)}`:'');
     await channel.send({...safe(announced),flags:MessageFlags.SuppressEmbeds});
     await interaction.editReply(safe(announced));
