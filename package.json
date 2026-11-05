@@ -17,7 +17,8 @@
     "discord:migrate": "node scripts/migrate-discord-meeting.js",
     "bench:storage": "node scripts/benchmark-storage.js",
     "verify:discord": "node scripts/verify-discord-live.js",
-    "discord:test": "node scripts/run-discord-test.js"
+    "discord:test": "node scripts/run-discord-test.js",
+    "eval:minutes": "node scripts/evaluate-minutes.js"
   },
   "dependencies": {
     "@discordjs/opus": "^0.10.0",
