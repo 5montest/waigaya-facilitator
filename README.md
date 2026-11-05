@@ -12,6 +12,8 @@
 
 2026年10月22日、Bot停止によるコマンド無応答を復旧し、systemdでの常駐・異常終了後の自動再起動・OS起動時の自動起動を設定しました。待機中の実プロセスを異常終了させ、約14.4秒でDiscordへ再接続することを確認しています。[常駐管理と復旧記録](docs/service-operation.md)を参照してください。
 
+2026年11月6日、11月5日の実会議で議事録が短すぎ、議論の理由・比較・懸念・条件が失われた問題に対して、議事録をv2へ改修しました。議論を「論点別（案・理由・制約・比較・反対・検証・事実）」に分類して保持し、Discord本文にも案と比較の要点を掲載します。あわせて議事録生成LLMをGLMから**DeepSeek V4.1 Flash**（ホスト上のAnthropic互換ブリッジ経由）へ変更し、担当者の明示的メンション（既定は通知無効・管理者が辞書とIDを確認した場合のみ）を追加しました。詳細は[議事録品質の改善](docs/minutes-quality-improvement.md)、[ベースライン計測](docs/minutes-quality-baseline.md)、[担当者メンション](docs/discord-owner-mentions.md)、[ロールバック手順](docs/rollback-20261106.md)を参照してください。実Guildでのメンション到達・実通話の受け入れは未実施です。
+
 ## 普段の使い方
 
 最初に [簡易説明書](docs/quick-start.md) を読んでください。参加者向けの詳しい手順と困ったときの操作は、[Discord利用マニュアル](docs/user-manual.md)に記載しています。
@@ -46,6 +48,21 @@ WAIGAYA_DISCORD_EMPTY_GRACE_MS=180000
 WAIGAYA_DISCORD_AUTO_PUBLISH=true
 ```
 
+議事録LLMは既定でDeepSeek V4.1 Flash（`deepseek-v4.1-flash`）を既存のAnthropic互換ブリッジへ依頼します。上書きする場合だけ次を設定します（未設定なら`ANTHROPIC_BASE_URL`・`ANTHROPIC_API_KEY`を継承）。文字起こしは中継先の外部サービスへ送られます。
+
+```dotenv
+WAIGAYA_MINUTES_MODEL=deepseek-v4.1-flash
+WAIGAYA_MINUTES_BASE_URL=http://127.0.0.1:7684
+WAIGAYA_MINUTES_API_KEY=<ブリッジの認証キー（既存設定を継承可）>
+WAIGAYA_MINUTES_EFFORT=high
+```
+
+担当者メンションを使う場合だけ、実Guildの`guildId`と確認済み`userId`を持つ別名辞書をリポジトリ外（既定`config/waigaya-member-aliases.json`、git管理外）に置き、`notificationDefaults.enabled=true`にします。辞書が無い・未検証・曖昧・Guild照合不能なら通知しません。`config/`には実IDを含まないサンプルだけをコミットしています。
+
+```dotenv
+WAIGAYA_MEMBER_ALIASES_FILE=config/waigaya-member-aliases.json
+```
+
 ```bash
 # サーバーを先に、Botを後に起動（稼働済みプロセスを重複起動しない）
 npm run discord:setup -- --register
@@ -56,7 +73,14 @@ npm run discord
 
 上記は手動での起動確認用です。常用するホストでは [systemdの設定手順](docs/service-operation.md) に従って管理します。`waigaya.service` の稼働中に手動コマンドで重複起動しないでください。
 
-固定設定が不足しているとBotは起動できません。ログイン後にもID・種別・所属・権限を検証します。原本は `data/waigaya.sqlite` に保存し、終了ジョブと投稿予約も同じDBから復元します。再起動時に録音は自動再開しません。結果不明の送信は管理者が照合するまで再送しません。
+固定設定が不足しているとBotは起動できません。ログイン後にもID・種別・所属・権限を検証します。原本は `data/waigaya.sqlite` に保存し、終了ジョブと投稿予約も同じDBから復元します。再起動時に録音は自動再開しません。結果不明の送信は管理者が照合するまで再送しません。議事録は新規生成がv2で、既存のv1議事録も読み続けます。v2議事録はLLMの出力をアプリ側で正規化・検証し、根拠のない担当・期限・決定を補正/拒否します。
+
+```bash
+npm test                 # 自動テスト（外部API・実Discordなし）
+npm run eval:minutes     # 議事録評価基盤の自己検証（決定論的・外部APIなし）
+```
+
+実API・実Discordを使う検証は、管理者の許可と隔離したテスト用フォーラム/Guildでだけ行います。
 
 ```bash
 npm ci

@@ -19,6 +19,7 @@ import { parseArgs } from 'node:util';
 const { values } = parseArgs({ options: {
   db: { type: 'string' }, session: { type: 'string' }, out: { type: 'string' },
   'max-utterances': { type: 'string' }, mock: { type: 'boolean', default: false },
+  'checkpoint-db': { type: 'string' }, fresh: { type: 'boolean', default: false },
 } });
 if (!values.db || !values.session) throw new Error('--db と --session を指定してください。');
 const outDir = resolve(values.out || 'work/preview');
@@ -59,7 +60,21 @@ const canonicalMinutes = minutesModule.canonicalMinutes || (document => ({ overv
 const log = message => console.log(`[${((Date.now() - started) / 1000).toFixed(1)}s] ${message}`);
 const started = Date.now();
 const usage = [];
-const checkpoints = { load: () => null, save: () => {} };
+// 途中失敗しても高額な抽出をやり直さないよう、チェックポイントは作業用SQLiteへ保存する。
+let checkpointStore = null;
+let checkpoints = { load: () => null, save: () => {} };
+if (values['checkpoint-db'] !== undefined) {
+  const { Store } = await import('../src/store.js');
+  const { rmSync } = await import('node:fs');
+  const cpPath = resolve(values['checkpoint-db'] || resolve(outDir, 'checkpoints.sqlite'));
+  mkdirSync(resolve(cpPath, '..'), { recursive: true, mode: 0o700 });
+  if (values.fresh) rmSync(cpPath, { force: true });
+  checkpointStore = new Store(cpPath);
+  checkpoints = {
+    load: key => checkpointStore.minutesCheckpoint('preview-' + state.id, key),
+    save: (key, document) => checkpointStore.saveMinutesCheckpoint('preview-' + state.id, key, document),
+  };
+}
 const mockGenerate = async ({ input }) => {
   const list = input.utterances || [];
   const u = list[0] || { id: 'u1', revision: 1 };

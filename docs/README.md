@@ -11,6 +11,11 @@
 | [Discord利用マニュアル](user-manual.md) | 開始・声の質問・自動終了／投稿、訂正、困ったときの操作 | — |
 | [2026年10月13日の実環境検証](live-validation-20261013.md) | 合成音声の実API、VC送信、フォーラム投稿、修正した使いにくさ | — |
 | [改善実装の差分](improvement-report.md) | 固定VC・音声呼びかけ・自動退出／投稿、互換性、制約 | — |
+| [議事録品質のベースライン](minutes-quality-baseline.md) | 11/5実会議の修正前実測（R0→R1→R2→R3の情報損失、STT、費用） | — |
+| [議事録品質の改善（v2）](minutes-quality-improvement.md) | v2スキーマ・パイプライン・プロンプト・テスト・H1〜H7の検証 | — |
+| [担当者メンション](discord-owner-mentions.md) | 別名辞書・ID照合・通知方針・dry-run・障害復旧 | — |
+| [2026年11月6日改修のロールバック](rollback-20261106.md) | 適用/切り戻し手順、DB・版・通知の扱い | — |
+| [一気通貫改善の最終レポート](end-to-end-report-20261106.md) | 修正前後の実測、AB、テスト、未測定、DoD対応 | — |
 | [実通話の受け入れチェック](manual-acceptance.md) | 開始一回・声の応答・全員退出・未確認公開・復旧の手動確認 | — |
 | [全体設計](ai-waigaya-design.md) | 継続的な会話状態、発言制御、段階的な実装方針 | [HTML](ai-waigaya-design.html) |
 | [デバイス選定](ai-waigaya-devices.md) | PC・スマホ・Jetsonと処理の配置 | [HTML](ai-waigaya-devices.html) |
