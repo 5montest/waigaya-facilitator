@@ -20,11 +20,25 @@ import { DiscordMinutesPublisher,preparePublication,splitAttachments,safeText } 
 import { inspectPublication,verifyMessageLink,requireAdministrator } from './reconcile.js';
 import { requireFormal,publicationState,publicationLabels,unresolved } from '../publication.js';
 import { minutesMarkdown, minutesStale, minutesProgressLabel } from '../minutes.js';
+import * as minutesCore from '../minutes.js';
+import { loadAliasDictionary,prepareMentionPlan,mentionPlanPreview } from './owner-mentions.js';
 
 export async function runBot({ config = discordConfig(), client = new Client({ intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildVoiceStates] }), join = joinVoiceChannel, ready = entersState, bridgeFactory = (base,options)=>new MeetingBridge(base,options), transcribe = transcribeSpeaker } = {}) {
   if(!loadOpenAIKey().configured) throw new Error('OpenAIキーを設定してください。');
   if(!config.serviceToken) throw new Error('Bot・会議サーバー間の認証ファイルを設定してください。discord-setup.mdを参照してください。');
   const confirmations=new Confirmations(), publisher=new DiscordMinutesPublisher(), starts=new Map(), editorForms=new Map();
+  // 別名辞書は起動時に一度だけ読む（実IDはファイル側にだけ置く）。無い/壊れている/無効なら通知しない。
+  const aliasLoad=loadAliasDictionary(), aliasDictionary=aliasLoad.dictionary;
+  if(aliasLoad.error)console.warn('担当者メンションの別名辞書を読み込めないため、担当者への通知は行いません。config/waigaya-member-aliases.sample.json を参考に設定してください。');
+  else if(!aliasDictionary.notificationDefaults.enabled)console.log('担当者メンションは無効です（notificationDefaults.enabled=false）。担当は本文に表示しますが通知しません。');
+  // v2議事録の編集UIはminutes-coreの共通ヘルパー（v1/v2対応・非破壊）に接続する。
+  const editableEntries=document=>minutesCore.minutesEditableEntries(document);
+  const replaceEntryText=(document,path,text)=>minutesCore.replaceMinutesEntryText(document,path,text);
+  const editTargetFromValue=(document,value)=>editableEntries(document).find(entry=>entry.path===value)??null;
+  async function mentionPlanFor(guild,state,version){
+    try{return await prepareMentionPlan({state,version,dictionary:aliasDictionary,guild,guildId:config.guildId});}
+    catch{return null;}
+  }
   const service=bridgeFactory(config.server,{serviceToken:config.serviceToken});
   let meeting=null,startingBridge=null,starting=false,disposed=false,completionWorker=null,policyReady=false,beginning=false;
   const ownsSession=id=>meeting?.bridge.state.id===id||startingBridge?.state?.id===id;
@@ -234,7 +248,10 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
     const bridge=bridgeFactory(config.server,{serviceToken:config.serviceToken});bridge.state=state;
     try{attachments.push(...splitAttachments(await bridge.artifact('transcript.md'),'transcript.md',interaction.attachmentSizeLimit||8*1024*1024));}catch{await service.api(base+'/events',{type:'health',kind:'file_export',healthy:false}).catch(()=>{});}
     if(attachments.length>10)throw new Error('添付が10個を超えています。容量の大きい成果物を個別取得できるよう管理者へ相談してください。原本は保持しています。');
-    await interaction.editReply({...safe(`会議：${state.topic}\n状態：${statusLabels[state.status]||'状態確認が必要'}／議事録：${minutesLabels[state.minutesStatus]||'未作成'} 版${state.minutesVersion}\n${state.minutesHistory.at(-1)?.kind==='summary'?'途中要約（正式議事録ではありません）':'正式議事録'}／公開：${publicationLabels[publicationState(state)]}${state.fixedOperation&&state.minutesHistory.at(-1)?(state.minutesHistory.at(-1).approvedAt?'／人が確認済み':'／AI生成・未確認'):''}\n保存先：${state.outputChannelId?`<#${state.outputChannelId}>`:'未設定・非公開'}\n${state.minutesStatus==='generating'||state.minutesStatus==='failed'?minutesProgressLabel(state)+'\n':''}${state.lastError||''}\nファイルは本人だけに表示します。確認済み操作は議事録の確認であり、決定候補を合意として確定する操作ではありません。`),files:attachments,components:minutesControls(state,interaction.user.id)});
+    // 送信前dry-run: 通知対象・根拠発言・担当判定・抑止理由をプレビューに出す（Discord送信なし）。
+    const version=state.minutesHistory.at(-1);
+    const planLines=version?mentionPlanPreview(await mentionPlanFor(interaction.guild,state,version)):'';
+    await interaction.editReply({...safe(`会議：${state.topic}\n状態：${statusLabels[state.status]||'状態確認が必要'}／議事録：${minutesLabels[state.minutesStatus]||'未作成'} 版${state.minutesVersion}\n${state.minutesHistory.at(-1)?.kind==='summary'?'途中要約（正式議事録ではありません）':'正式議事録'}／公開：${publicationLabels[publicationState(state)]}${state.fixedOperation&&state.minutesHistory.at(-1)?(state.minutesHistory.at(-1).approvedAt?'／人が確認済み':'／AI生成・未確認'):''}\n保存先：${state.outputChannelId?`<#${state.outputChannelId}>`:'未設定・非公開'}\n${state.minutesStatus==='generating'||state.minutesStatus==='failed'?minutesProgressLabel(state)+'\n':''}${state.lastError||''}\n${planLines?`${planLines}\n`:''}ファイルは本人だけに表示します。確認済み操作は議事録の確認であり、決定候補を合意として確定する操作ではありません。`),files:attachments,components:minutesControls(state,interaction.user.id)});
   }
   async function outputFor(state,interaction){
     if(!state.outputChannelId)throw new Error('保存先が未設定です。議事録画面の「保存先を選ぶ」か /destination を使い、確認して投稿をやり直してください。');
@@ -244,9 +261,9 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
   async function showReview(interaction,state,{alreadyApproved=false}={}){
     const version=state.minutesHistory.at(-1);requireFormal(state,version);
     if(alreadyApproved&&!version.approvedAt)throw new Error('/minutes の「確認して投稿」を使ってください。');
-    const output=await outputFor(state,interaction),prepared=await preparePublication({state,channel:output,actor:interaction.member,bot:interaction.guild.members.me,attachmentLimit:interaction.attachmentSizeLimit});
+    const output=await outputFor(state,interaction),prepared=await preparePublication({state,channel:output,actor:interaction.member,bot:interaction.guild.members.me,attachmentLimit:interaction.attachmentSizeLimit,mentions:{dictionary:aliasDictionary}});
     const id=confirmations.issue(alreadyApproved?'publish':'reviewpublish',state,interaction.user.id);
-    await interaction.editReply({...safe(`保存先：${output.type===ChannelType.GuildForum?'フォーラム':'テキスト'} <#${output.id}>\n公開範囲：この親チャンネルを閲覧できる全員。会議だけの非公開投稿ではありません。\n対象：正式議事録 版${version.version}${state.fixedOperation&&state.publications.some(p=>p.version===version.version&&p.status==='published')&&!version.approvedAt?`（人の確認は版${version.version+1}として追記）`:''}\nタグ：${prepared.tags.map(t=>safeText(t.name)).join('、')||'なし'}${prepared.thread?.archived?'（投稿を再開して追記します）':''}\n${prepared.content.slice(0,1100)}\n（短いプレビューです。全文は議事録の添付で確認してください。）\n\n確認は操作担当者によるものです。最終確認後に承認を保存して直ちに投稿します（60秒で失効）。`),components:confirmation(id,'確認してこの先へ投稿する')});
+    await interaction.editReply({...safe(`保存先：${output.type===ChannelType.GuildForum?'フォーラム':'テキスト'} <#${output.id}>\n公開範囲：この親チャンネルを閲覧できる全員。会議だけの非公開投稿ではありません。\n対象：正式議事録 版${version.version}${state.fixedOperation&&state.publications.some(p=>p.version===version.version&&p.status==='published')&&!version.approvedAt?`（人の確認は版${version.version+1}として追記）`:''}\nタグ：${prepared.tags.map(t=>safeText(t.name)).join('、')||'なし'}${prepared.thread?.archived?'（投稿を再開して追記します）':''}\n${prepared.content.slice(0,1100)}\n（短いプレビューです。全文は議事録の添付で確認してください。）\n\n${prepared.mentionSummary}\n\n確認は操作担当者によるものです。最終確認後に承認を保存して直ちに投稿します（60秒で失効）。`),components:confirmation(id,'確認してこの先へ投稿する')});
   }
   async function showDestination(interaction,state){
     const id=confirmations.issue('destination',state,interaction.user.id);
@@ -286,8 +303,10 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
           await preview(interaction,updated);return;
         }
         if(state.minutesVersion!==form.version)throw new Error('議事録の版が変わりました。/minutes で確認してください。');
-        const document=structuredClone(state.minutesHistory.at(-1).document);
-        document[form.section][form.index].text=interaction.fields.getTextInputValue('text');
+        const text=interaction.fields.getTextInputValue('text');
+        let document;
+        try{document=replaceEntryText(state.minutesHistory.at(-1).document,form.path,text);}
+        catch(e){throw new Error(e instanceof UserError?e.message:'訂正対象が変わりました。/minutes から開き直してください。');}
         const updated=await service.api(`/api/sessions/${state.id}/minutes`,{action:'edit',version:form.version,actorId:interaction.user.id,document});await preview(interaction,updated);return;
       }
       if(interaction.isStringSelectMenu?.()&&interaction.customId.startsWith('wg:rawitem:')){
@@ -303,11 +322,11 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
         if(interaction.customId.split(':').at(-1)!==interaction.user.id)throw new Error('訂正画面の実行者が異なります。');
         const [, ,sessionId,versionString]=interaction.customId.split(':'),state=await stateFor(sessionId);await access(state,interaction);
         if(state.minutesVersion!==Number(versionString))throw new Error('版が更新されました。/minutes からやり直してください。');
-        const [section,indexString]=interaction.values[0].split(':'),index=Number(indexString),item=state.minutesHistory.at(-1).document[section]?.[index];
-        if(!item)throw new Error('訂正対象がありません。');
-        const id=confirmations.issue('edit',state,interaction.user.id);editorForms.set(id,{userId:interaction.user.id,sessionId,version:state.minutesVersion,section,index,expiresAt:Date.now()+60000});
+        const target=editTargetFromValue(state.minutesHistory.at(-1).document,interaction.values[0]);
+        if(!target)throw new Error('訂正対象がありません。');
+        const id=confirmations.issue('edit',state,interaction.user.id);editorForms.set(id,{userId:interaction.user.id,sessionId,version:state.minutesVersion,path:target.path,expiresAt:Date.now()+60000});
         const modal=new ModalBuilder().setCustomId(`wg:editform:${id}`).setTitle('議事録の項目を訂正');
-        modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('text').setLabel('本文（根拠は維持します）').setStyle(TextInputStyle.Paragraph).setMaxLength(2000).setRequired(true).setValue(item.text)));
+        modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('text').setLabel('本文（根拠は維持します）').setStyle(TextInputStyle.Paragraph).setMaxLength(Number(state.minutesHistory.at(-1).document?.schemaVersion)===2?400:2000).setRequired(true).setValue(target.text)));
         await interaction.showModal(modal);return;
       }
       if(interaction.isButton?.()){
@@ -330,7 +349,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
             if(state.minutesVersion!==intent.version||state.outputChannelId!==intent.channelId||(state.outputRevision||0)!==intent.outputRevision)throw new Error('版または保存先が変わりました。/minutes で確認し直してください。');
             const output=await outputFor(state,interaction);requireFormal(state,state.minutesHistory.at(-1));
             const approved=intent.operation==='reviewpublish'?await service.api(`/api/sessions/${state.id}/minutes`,{action:'approve',version:intent.version,actorId:interaction.user.id}):state;
-            const result=await publisher.publish({state:approved,channel:output,actor:interaction.member,bot:interaction.guild.members.me,attachmentLimit:interaction.attachmentSizeLimit,api:body=>service.api(`/api/sessions/${state.id}/minutes`,body)});
+            const result=await publisher.publish({state:approved,channel:output,actor:interaction.member,bot:interaction.guild.members.me,attachmentLimit:interaction.attachmentSizeLimit,mentions:{dictionary:aliasDictionary},api:body=>service.api(`/api/sessions/${state.id}/minutes`,body)});
             await interaction.editReply({...safe(`確認済み議事録を${result.duplicate?'取得しました（投稿済み・二重投稿なし）':'投稿しました'}。\n${result.url||`https://discord.com/channels/${state.guildId}/${result.threadId||output.id}/${result.messageId}`}\n${result.warning||''}`),components:[],files:[]});return;
           }
         }
@@ -355,7 +374,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
         }
         if(['edit','editpage'].includes(operation)){
           const {StringSelectMenuBuilder,ButtonBuilder,ButtonStyle}=await import('discord.js');const options=[];
-          for(const [section,items] of Object.entries(state.minutesHistory.at(-1).document))items.forEach((item,index)=>options.push({label:item.text.slice(0,90),value:`${section}:${index}`}));
+          for(const target of editableEntries(state.minutesHistory.at(-1).document))options.push({label:`${target.sectionLabel}: ${target.text.slice(0,70)}`.slice(0,100),value:target.path});
           if(!options.length)throw new Error('訂正する項目がありません。');
           const page=operation==='editpage'?Number(interaction.customId.split(':')[4]):0;
           if(!Number.isInteger(page)||page<0||page*25>=options.length)throw new Error('表示が失効しました。/minutes から開き直してください。');

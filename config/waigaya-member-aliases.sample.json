@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "templateOnly": true,
+  "warning": "これは表示名・username・別名の照合ヒントです。実際のDiscord userId/guildIdは含みません。実Guildで管理者がIDを確認し、verified/enabledを設定するまで通知しないでください。この画像・一覧は会議出席を証明しません。",
+  "guildId": null,
+  "notificationDefaults": {
+    "enabled": false,
+    "mentionOnlyExplicitAssignees": true,
+    "mentionProposedAssignees": false,
+    "suppressRepeatMentions": true
+  },
+  "members": [
+    {
+      "userId": null,
+      "usernameHint": "orishikan_74100",
+      "displayNameHint": "オリシーカン",
+      "aliases": ["折原"],
+      "verified": false,
+      "enabled": false
+    },
+    {
+      "userId": null,
+      "usernameHint": "claytoxicz",
+      "displayNameHint": "消防車もどき",
+      "aliases": ["しみず", "きよみず"],
+      "verified": false,
+      "enabled": false
+    },
+    {
+      "userId": null,
+      "usernameHint": "eternalfriend17",
+      "displayNameHint": "孔明",
+      "aliases": ["孔明先生", "木村", "まじぱね"],
+      "verified": false,
+      "enabled": false
+    },
+    {
+      "userId": null,
+      "usernameHint": "5montest",
+      "displayNameHint": "5montest",
+      "aliases": ["前田", "なつき"],
+      "verified": false,
+      "enabled": false
+    },
+    {
+      "userId": null,
+      "usernameHint": "iketani_y",
+      "displayNameHint": "iketani_y",
+      "aliases": ["池谷"],
+      "verified": false,
+      "enabled": false
+    },
+    {
+      "userId": null,
+      "usernameHint": "ktokunn",
+      "displayNameHint": "ktokunn",
+      "aliases": ["鈴木", "鈴木氏"],
+      "verified": false,
+      "enabled": false
+    }
+  ]
+}

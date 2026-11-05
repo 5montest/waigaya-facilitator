@@ -21,7 +21,8 @@ async function fixture(){
  const client=new EventEmitter();client.user={id:botId};client.login=async()=>{};client.destroy=()=>{};client.users={fetch:async()=>({send:async()=>{}})};
  const connection=new EventEmitter(),speaking=new EventEmitter();speaking.users=new Set();connection.subscribe=()=>{};connection.destroy=()=>{};connection.receiver={speaking,subscribe:()=>{throw new Error('no audio in UI test');}};let joins=0;
  const runtime=await runBot({client,join:()=>{joins++;return connection;},ready:async()=>{},config:{guildId,server:base,serviceToken:'test-service',token:'mock-only',controlRoleIds:[]}});
- function interaction({action='minutes',customId,values,userId=ownerId,admin=false,strings={},channel,clear=false,kind='command'}={}){return{commandName:kind==='command'?'waigaya':undefined,guildId,user:{id:userId},member,memberPermissions:{has:()=>admin},guild,customId,values,options:{getSubcommand:()=>action,getString:key=>strings[key]||null,getChannel:()=>channel,getBoolean:()=>clear,getFocused:()=>''},isChatInputCommand:()=>kind==='command',isAutocomplete:()=>kind==='autocomplete',isButton:()=>kind==='button',isStringSelectMenu:()=>kind==='select',isChannelSelectMenu:()=>kind==='channel',isModalSubmit:()=>false,deferred:false,replied:false,async deferReply(){this.deferred=true;},async deferUpdate(){this.deferred=true;},async editReply(v){replies.push(v);this.replied=true;},async reply(v){replies.push(v);this.replied=true;},async respond(v){replies.push(v);}};}
+ let shownModal=null;
+ function interaction({action='minutes',customId,values,userId=ownerId,admin=false,strings={},channel,clear=false,kind='command',fields={}}={}){return{commandName:kind==='command'?'waigaya':undefined,guildId,user:{id:userId},member,memberPermissions:{has:()=>admin},guild,customId,values,fields:{getTextInputValue:key=>fields[key]??''},options:{getSubcommand:()=>action,getString:key=>strings[key]||null,getChannel:()=>channel,getBoolean:()=>clear,getFocused:()=>''},isChatInputCommand:()=>kind==='command',isAutocomplete:()=>kind==='autocomplete',isButton:()=>kind==='button',isStringSelectMenu:()=>kind==='select',isChannelSelectMenu:()=>kind==='channel',isModalSubmit:()=>kind==='modal',showModal:async modal=>{shownModal=modal;},deferred:false,replied:false,async deferReply(){this.deferred=true;},async deferUpdate(){this.deferred=true;},async editReply(v){replies.push(v);this.replied=true;},async reply(v){replies.push(v);this.replied=true;},async respond(v){replies.push(v);}};}
  const dispatch=async options=>{const i=interaction(options);if(options?.foreignGuild)i.guildId='999999999999999999';await Promise.all(client.listeners(Events.InteractionCreate).map(h=>h(i)));return replies.at(-1);};
  let state;
  const create=async({outputChannelId=forumId,finish=true}={})=>{
@@ -31,7 +32,7 @@ async function fixture(){
   return state;
  };
  const get=async()=> (await api(`/api/sessions/${state.id}`)).body;
- return{store,app,client,guild,member,forum,text,created,sent,replies,dispatch,api,create,get,generated:()=>generated,joins:()=>joins,close:async()=>{await runtime.close();await app.close();if(previous===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=previous;}};
+ return{store,app,client,guild,member,forum,text,created,sent,replies,dispatch,api,create,get,generated:()=>generated,joins:()=>joins,modal:()=>shownModal,close:async()=>{await runtime.close();await app.close();if(previous===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=previous;}};
 }
 test('模擬Discord: 非公開下書きから最終確認・承認・フォーラム投稿・版2追記まで完遂する',async()=>{
  const r=await fixture();try{const state=await r.create();const preview=await r.dispatch();assert.equal(preview.files.length,3);assert.match(preview.content,/正式議事録/);assert.equal(r.created.length,0);
@@ -78,7 +79,38 @@ test('模擬Discord: 結果不明の投稿URLを管理者が検証して復旧�
 
 test('模擬Discord: 議事録編集は25件以降もページで選べ、他ギルドの操作を拒否する',async()=>{
  const r=await fixture();try{const state=await r.create(),document=structuredClone(state.minutesHistory[0].document);document.ideas=Array.from({length:30},(_,i)=>({text:'試行案'+i,evidence:[{utteranceId:'u',revision:1}]}));await r.api(`/api/sessions/${state.id}/minutes`,{action:'edit',version:1,document});
-  let response=await r.dispatch({kind:'button',customId:`wg:edit:${state.id}:2:${ownerId}`});assert.match(response.content,/1\/2ページ/);response=await r.dispatch({kind:'button',customId:`wg:editpage:${state.id}:2:1:${ownerId}`});assert.match(response.content,/2\/2ページ/);assert.ok(response.components[0].components[0].toJSON().options.some(o=>o.value==='ideas:29'));
+  let response=await r.dispatch({kind:'button',customId:`wg:edit:${state.id}:2:${ownerId}`});assert.match(response.content,/1\/2ページ/);response=await r.dispatch({kind:'button',customId:`wg:editpage:${state.id}:2:1:${ownerId}`});assert.match(response.content,/2\/2ページ/);assert.ok(response.components[0].components[0].toJSON().options.some(o=>o.value==='ideas[29]'));
   response=await r.dispatch({foreignGuild:true,strings:{meeting:state.id}});assert.match(response.content,/設定されたサーバー/);assert.equal(response.files,undefined);
+ }finally{await r.close();}
+});
+
+
+test('模擬Discord: v2議事録も論点entryを編集フォームで選び、path指定で本文だけを差し替える',async()=>{
+ const r=await fixture();try{
+  const state=await r.create();
+  const v2={schemaVersion:2,overview:[{text:'概要の本文',evidence:[{utteranceId:'u',revision:1}]}],discussionTopics:[{topicKey:'price',title:'価格帯',entries:[{category:'reason',text:'価格の理由',evidence:[{utteranceId:'u',revision:1}]}]}],decisionCandidates:[],openIssues:[],keyFacts:[],actionItems:[]};
+  const edited=(await r.api(`/api/sessions/${state.id}/minutes`,{action:'edit',version:1,document:v2,actorId:ownerId})).body;
+  assert.equal(edited.minutesVersion,2);
+  const response=await r.dispatch({kind:'button',customId:`wg:edit:${state.id}:2:${ownerId}`});
+  const options=response.components[0].components[0].toJSON().options;
+  const topicOption=options.find(option=>option.value==='discussionTopics[0].entries[0]');
+  assert.ok(topicOption,'v2の論点entryが編集候補に出る');
+  assert.match(topicOption.label,/論点：価格帯/);
+  assert.ok(options.some(option=>option.value==='overview[0]'));
+  await r.dispatch({kind:'select',customId:`wg:item:${state.id}:2:${ownerId}`,values:['discussionTopics[0].entries[0]']});
+  const modal=r.modal();
+  assert.ok(modal,'編集モーダルが開く');
+  assert.match(modal.data.custom_id,/^wg:editform:/);
+  const input=modal.components[0].components[0].toJSON();
+  assert.equal(input.value,'価格の理由');
+  assert.equal(input.max_length,400);
+  const result=await r.dispatch({kind:'modal',customId:modal.data.custom_id,fields:{text:'価格の理由を訂正した本文'}});
+  assert.match(result.content,/正式議事録/);
+  const latest=await r.get();
+  assert.equal(latest.minutesVersion,3);
+  const entry=latest.minutesHistory.at(-1).document.discussionTopics[0].entries[0];
+  assert.equal(entry.text,'価格の理由を訂正した本文');
+  assert.equal(entry.category,'reason');
+  assert.deepEqual(entry.evidence,[{utteranceId:'u',revision:1}]);
  }finally{await r.close();}
 });
