@@ -17,3 +17,6 @@ secrets/
 *.log
 *.pid
 .DS_Store
+
+# 実GuildのユーザーIDを含む別名辞書（サンプルのみコミット）
+config/waigaya-member-aliases.json
