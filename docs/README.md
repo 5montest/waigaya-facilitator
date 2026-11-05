@@ -16,6 +16,7 @@
 | [担当者メンション](discord-owner-mentions.md) | 別名辞書・ID照合・通知方針・dry-run・障害復旧 | — |
 | [2026年11月6日改修のロールバック](rollback-20261106.md) | 適用/切り戻し手順、DB・版・通知の扱い | — |
 | [一気通貫改善の最終レポート](end-to-end-report-20261106.md) | 修正前後の実測、AB、テスト、未測定、DoD対応 | — |
+| [2026年11月6日の本番反映](deployment-20261106.md) | マージ・バックアップ・テストゲート・再起動・起動確認・制約 | — |
 | [実通話の受け入れチェック](manual-acceptance.md) | 開始一回・声の応答・全員退出・未確認公開・復旧の手動確認 | — |
 | [全体設計](ai-waigaya-design.md) | 継続的な会話状態、発言制御、段階的な実装方針 | [HTML](ai-waigaya-design.html) |
 | [デバイス選定](ai-waigaya-devices.md) | PC・スマホ・Jetsonと処理の配置 | [HTML](ai-waigaya-devices.html) |
