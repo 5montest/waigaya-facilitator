@@ -32,7 +32,9 @@ async function readBody(req) {
 
 export function createApp({ store = new Store(), modelAnalyze = analyze, sttConnect = connectStt, ttsSynthesize = synthesize,
   minutesGenerator = new MinutesGenerator(), fixed = loadFixedPolicy(), serviceToken = loadServiceToken(),
+  heartbeatTimeoutMs = 2500, heartbeatRecoveryMs = 30000,
   access = { hosts: ['127.0.0.1', 'localhost'], networks: ['127.0.0.0/8', '::1/128'] }, tls, caCertificate, httpsUrl = null } = {}) {
+  if (![heartbeatTimeoutMs,heartbeatRecoveryMs].every(ms=>Number.isFinite(ms)&&ms>0)) throw new Error('入力監視の待機時間が不正です。');
   const sessions = new Map(), minutesJobs = new Map();
   if(fixed){fixed=validatePolicy(fixed);store.saveGuildSettings({...store.guildSettings(fixed.guildId),fixedPolicy:fixed});}
   const serviceAuthorized = req => {
@@ -58,7 +60,8 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
     const saved = store.load(id);
     if (!saved) throw new Error('会議が見つかりません。');
     const c = new Controller(saved);
-    c.stop('server_restarted'); c.healthy(false); c.state.candidate = null;
+    c.stop('server_restarted'); c.healthy(false); c.state.candidate = null; c.state.inputRecovery = null;
+    for (const gap of c.state.gaps) if (gap.kind === 'input_unverified' && gap.endedAt === null) gap.endedAt = Date.now();
     if (c.state.request) c.state.request.status = 'needs_refresh';
     const r = { c, clients: new Set(), pending: null, tts: null, ttsEpoch: null, micOwner: null, heartbeatAt: 0 };
     sessions.set(id, r);
@@ -329,14 +332,30 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
   function attach(ws, r) {
     r.clients.add(ws); ws.stateCache={};send(ws,stateMessage(r.c.state,ws.stateCache));
     let stt = null, healthy = false, closing = false;
-    const lost = () => { healthy = false; if (r.micOwner === ws) { r.c.healthy(false); try { save(r, 'microphone_lost'); } catch { send(ws, { type:'error',error:'保存に失敗しました。直近の更新は保存を確認できません。音声入力を停止します。' }); } } };
+    const closeRecovery = () => {
+      if (r.micOwner !== ws || !r.heartbeatRecovery) return;
+      r.heartbeatRecovery.gap.endedAt = Date.now();
+      r.heartbeatRecovery = null; r.c.state.inputRecovery = null;
+    };
+    const lost = () => { healthy = false; if (r.micOwner === ws) { closeRecovery(); r.c.healthy(false); try { save(r, 'microphone_lost'); } catch { send(ws, { type:'error',error:'保存に失敗しました。直近の更新は保存を確認できません。音声入力を停止します。' }); } } };
+    const heartbeat = () => {
+      const now = Date.now(); r.heartbeatAt = now;
+      const recovery = r.heartbeatRecovery;
+      // A delayed heartbeat may restore only this still-open, explicitly started
+      // capture. It must not resume pause/finish, an STT failure, or an expired lease.
+      if (!recovery || closing || !healthy || r.micOwner !== ws || r.c.state.status !== 'recording' || r.c.state.health.storage === 'failed' || now - recovery.since >= heartbeatRecoveryMs) return;
+      recovery.gap.endedAt = now;
+      r.heartbeatRecovery = null; r.c.state.inputRecovery = null;
+      r.c.state.health.input = 'ok'; r.c.healthy(true);
+      save(r, 'microphone_recovered', { elapsedMs: now - recovery.since });
+    };
     ws.on('message', (raw, binary) => {
       let event;
       try {
         if (binary) {
           if (!stt || !healthy || r.micOwner !== ws) return;
           if (r.finishDraining || ['paused', 'empty_grace', 'finalizing', 'completed', 'finalize_failed'].includes(r.c.state.status)) return;
-          stt.send(raw); r.heartbeatAt = Date.now(); return;
+          stt.send(raw); heartbeat(); return;
         }
         event = JSON.parse(raw.toString());
         if(event.type==='resync'){ws.stateCache={};send(ws,stateMessage(r.c.state,ws.stateCache));return;}
@@ -345,7 +364,8 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
           if (!r.c.state.guildId && r.c.state.status === 'created') r.c.lifecycle('start');
           if (r.micOwner && r.micOwner !== ws) throw new Error('別の画面がマイクを使用しています。');
           if (stt) throw new Error('マイクは起動済みです。');
-          r.micOwner = ws; r.heartbeatAt = Date.now(); closing = false; r.c.healthy(false);
+          closeRecovery(); r.micOwner = ws; r.heartbeatAt = Date.now(); closing = false; r.c.healthy(false);
+          r.c.state.inputRecovery = null; r.c.state.health.input = 'ok';
           if (event.transcribe) {
             if (!keyFor('openai')) throw new Error('OpenAIのキーが未設定です。');
             const audioStartedAt = Date.now();
@@ -361,7 +381,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
             r.sttHandle = stt;
           } else { healthy = true; r.c.healthy(true); save(r, 'vad_only_ready'); send(ws, { type: 'mic_ready', transcribe: false }); }
         } else if (event.type === 'heartbeat' && r.micOwner === ws) {
-          r.heartbeatAt = Date.now();
+          heartbeat();
         } else if (event.type === 'vad' && r.micOwner === ws && healthy) {
           if (typeof event.active !== 'boolean') throw new Error('音声状態が不正です。');
           if (event.interrupt !== undefined && typeof event.interrupt !== 'boolean') throw new Error('音声割込みの設定が不正です。');
@@ -404,10 +424,35 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
     ws.on('error', () => {});
     ws.on('close', () => { closing = true; r.clients.delete(ws); stt?.abort(); if (r.micOwner === ws) { lost(); r.micOwner = null; } });
   }
+  let lastWatchdogAt = Date.now();
   const watchdog = setInterval(() => {
+    const now = Date.now(), eventLoopDelayMs = Math.max(0, now - lastWatchdogAt - 100);
+    lastWatchdogAt = now;
     for (const r of sessions.values()) {
       try {
-      if (r.micOwner && r.c.state.inputHealthy && Date.now() - r.heartbeatAt > 2500) { r.c.healthy(false); save(r, 'microphone_timeout'); send(r.micOwner, { type: 'error', error: 'マイク入力が止まりました。起動し直してください。' }); }
+      if (r.heartbeatRecovery && (!r.micOwner || r.c.state.status !== 'recording')) {
+        r.heartbeatRecovery.gap.endedAt = now;
+        r.heartbeatRecovery = null; r.c.state.inputRecovery = null;
+        save(r, 'microphone_recovery_cancelled');
+      }
+      if (r.micOwner && r.c.state.status === 'recording') {
+        if (!r.heartbeatRecovery && r.c.state.inputHealthy && now - r.heartbeatAt > heartbeatTimeoutMs) {
+          const gap = { kind: 'input_unverified', startedAt: r.heartbeatAt, endedAt: null };
+          r.c.state.gaps.push(gap);
+          r.heartbeatRecovery = { since: now, gap };
+          r.c.state.inputRecovery = { status: 'waiting', since: now, expiresAt: now + heartbeatRecoveryMs };
+          r.c.state.health.input = 'failed'; r.c.healthy(false);
+          r.c.invalidate({ reason: 'input_timeout' });
+          save(r, 'microphone_timeout', { heartbeatAgeMs: now - r.heartbeatAt, eventLoopDelayMs, recoveryMs: heartbeatRecoveryMs });
+          // Nonfatal: stop TTS/candidates but retain the current recording and ID.
+          send(r.micOwner, { type: 'input_warning', code: 'heartbeat_delayed' });
+        } else if (r.heartbeatRecovery && now - r.heartbeatRecovery.since >= heartbeatRecoveryMs && !r.heartbeatRecovery.expired) {
+          r.heartbeatRecovery.expired = true; r.heartbeatRecovery.gap.endedAt = now;
+          r.c.state.inputRecovery.status = 'failed';
+          save(r, 'microphone_recovery_expired', { heartbeatAgeMs: now - r.heartbeatAt, eventLoopDelayMs });
+          send(r.micOwner, { type: 'error', code: 'heartbeat_expired', error: '入力接続が復旧しません。保存済みの原本は保持しています。接続を確認してください。' });
+        }
+      }
       if (r.c.expire()) save(r, 'candidate_expired');
       } catch { r.c.healthy(false); console.error('会議の保存に失敗しました。入力を停止しました。'); }
     }

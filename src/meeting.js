@@ -66,4 +66,4 @@ export class EmptyGrace {
 
 export const statusLabels = { created:'開始前',recording:'記録中',paused:'記録を一時停止',empty_grace:'全員退出・復帰待ち',finalizing:'記録終了・議事録生成中',completed:'記録終了',finalize_failed:'記録終了・議事録生成失敗' };
 export const minutesLabels = { none:'未作成',generating:'生成中',draft:'下書き・未確認',needs_review:'要再確認',approved:'操作担当者が確認済み',failed:'生成失敗' };
-export const healthLabels = { stt:'文字起こし',tts:'AI音声',connection:'接続',storage:'保存',discord_post:'Discord送信',file_export:'ファイル出力' };
+export const healthLabels = { stt:'文字起こし',tts:'AI音声',connection:'接続',input:'入力接続の確認',storage:'保存',discord_post:'Discord送信',file_export:'ファイル出力' };
