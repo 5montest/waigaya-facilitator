@@ -55,8 +55,8 @@ test('実環境想定: WebSocket切断で記録と返答を止め、確定済み
  try{await r.action('start');await r.emit('保存が完了した発言は切断後も残します。');r.runtime.meeting.bridge.ws.terminate();await waitFor(()=>r.runtime.meeting===null);const state=await r.complete();assert.equal(state.endReason,'connection_lost');assert.equal(state.health.connection,'failed');assert.equal(state.utterances.length,1);assert.equal(r.created.length,1);assert.equal(r.tts.length,0);}finally{await r.close();}
 });
 
-test('実環境想定: 心拍が途絶えたら実タイマーで切断を検出し、勝手に記録を再開しない',async()=>{
- const r=await fixedFixture();
+test('実環境想定: 心拍の復旧猶予を過ぎたら終了し、勝手に記録を再開しない',async()=>{
+ const r=await fixedFixture({heartbeatRecoveryMs:1000});
  try{await r.action('start');await r.emit('心拍が止まる前に記録しました。');clearInterval(r.runtime.meeting.bridge.heartbeat);await waitFor(()=>r.runtime.meeting===null,6000);const state=await r.complete();assert.equal(state.endReason,'connection_lost');assert.equal(state.utterances.length,1);assert.equal(r.joins(),1);}finally{await r.close();}
 });
 
@@ -104,4 +104,34 @@ test('実環境想定: Bot強制退出のGateway通知と音声切断が重な�
 
 test('実環境想定: Botのサーバー受信無効を記録中と誤表示せず、開始時・会議中とも停止する',async()=>{
  for(const phase of ['start','recording']){const r=await fixedFixture();try{if(phase==='start')r.guild.voiceStates.cache.set(ids.bot,{channelId:ids.vc,channel:r.voice,serverDeaf:true});await r.action('start');if(phase==='recording')r.client.emit(Events.VoiceStateUpdate,{channelId:ids.vc},{id:ids.bot,channelId:ids.vc,member:r.bot,serverDeaf:true});await waitFor(()=>r.runtime.meeting===null);const state=await r.state();assert.equal(state.health.connection,'failed');assert.ok(state.gaps.some(g=>g.kind==='connection'));assert.equal(r.captures.length,0);assert.equal(r.destroys(),1);}finally{await r.close();}}
+});
+
+
+test('心拍遅延はAI音声だけを止め、復旧すれば同じ会議へ記録を継続する',async()=>{
+ const r=await fixedFixture();
+ try{await r.action('start');await r.emit('復旧前の原発言です。');const bridge=r.runtime.meeting.bridge,id=(await r.state()).id;
+ clearInterval(bridge.heartbeat);await waitFor(async()=>(await r.state()).inputRecovery?.status==='waiting',4500);
+ const waiting=await r.state();assert.equal(waiting.status,'recording');assert.equal(waiting.inputHealthy,false);assert.equal(r.generated.length,0);assert.equal(r.created.length,0);
+ bridge.send({type:'heartbeat'});await waitFor(async()=>(await r.state()).inputHealthy);
+ const recovered=await r.state();assert.equal(recovered.id,id);assert.equal(recovered.inputRecovery,null);assert.equal(recovered.health.input,'ok');assert.ok(recovered.gaps.find(g=>g.kind==='input_unverified').endedAt);assert.equal(recovered.reply,null);assert.equal(recovered.playback,null);
+ bridge.heartbeat=setInterval(()=>bridge.send({type:'heartbeat'}),500);await r.emit('復旧後の原発言です。');assert.equal((await r.state()).utterances.length,2);await r.action('end');await r.complete();assert.equal(r.generated.length,1);assert.equal(r.created.length,1);
+ }finally{await r.close();}
+});
+
+test('心拍復旧待ち中のpauseは遅着心拍でも録音を再開しない',async()=>{
+ const r=await fixedFixture();
+ try{await r.action('start');const bridge=r.runtime.meeting.bridge;clearInterval(bridge.heartbeat);await waitFor(async()=>(await r.state()).inputRecovery?.status==='waiting',4500);await r.action('pause');bridge.send({type:'heartbeat'});await delay(250);const state=await r.state();assert.equal(state.status,'paused');assert.equal(state.inputHealthy,false);assert.equal(state.inputRecovery,null);assert.equal(r.generated.length,0);}finally{await r.close();}
+});
+
+test('心拍遅延で再生許可を取り消し、復旧後も旧TTS片を再開しない',async()=>{
+ const r=await fixedFixture({holdTts:true});
+ try{await r.action('start');await r.emit('ワイガヤ、まとめて');await waitFor(()=>r.tts.length===1&&r.runtime.meeting.playback.epoch!==null);const current=r.runtime.meeting,epoch=current.playback.epoch;clearInterval(current.bridge.heartbeat);
+ await waitFor(async()=>(await r.state()).inputRecovery?.status==='waiting',4500);assert.equal(current.playback.epoch,null);assert.ok((await r.state()).outputEpoch>epoch);
+ current.bridge.send({type:'heartbeat'});await waitFor(async()=>(await r.state()).inputHealthy);r.tts[0].onChunk(Buffer.alloc(960));r.tts[0].onDone();await delay(100);assert.equal(current.playback.epoch,null);assert.equal((await r.state()).reply,null);assert.equal((await r.state()).status,'recording');
+ }finally{await r.close();}
+});
+
+test('イベントループが3秒停止しても遅着心拍を待ち、会議を即分割しない',async()=>{
+ const r=await fixedFixture();
+ try{await r.action('start');await r.emit('停止前の保存済み発言。');const id=(await r.state()).id;Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,3100);await delay(1000);assert.ok(r.runtime.meeting);const state=await r.state();assert.equal(state.id,id);assert.equal(state.status,'recording');assert.equal(state.inputHealthy,true);assert.equal(r.generated.length,0);assert.equal(r.created.length,0);}finally{await r.close();}
 });

@@ -865,6 +865,13 @@ function markdownHeader(state, version, metadata) {
     `- 状態：${state.status}`, `- 議事録：版${version.version} ${stale ? '要再確認' : version.approvedAt ? '操作担当者が確認済み' : (state.fixedOperation?'AI生成・未確認':'AI下書き（未承認）')}`,
     `- 参加者（記録で確認）：${(metadata.participantNames || [...new Set(state.utterances.map(u => u.speaker).filter(Boolean))]).map(clean).join('、') || '不明'}`, ''];
   if(version.recovery?.method==='assistant_without_api')lines.push('作成方法：保存済み文字起こしを支援AIが直接読んで復旧しました。この復旧ではOpenAI APIの追加呼び出しを行っていません。人による確認は未実施です。', '');
+  if(version.recovery?.method==='assistant_merge_without_api') {
+    lines.push('作成方法：異常終了の前後に分かれた保存済み文字起こしを統合しました。追加のモデルAPI呼び出しは行っていません。原会議と旧投稿は保持しています。人による内容確認は未実施です。','');
+    const local=t=>new Intl.DateTimeFormat('ja-JP',{timeZone:'Asia/Tokyo',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(t));
+    for(const [i,source] of (state.merge?.sources||[]).entries())lines.push(`- 原記録${i+1}：${local(source.startedAt)}〜${local(source.endedAt)}（日本時間）`);
+    for(const gap of state.gaps.filter(g=>g.kind==='session_interruption'))lines.push(`- 中断区間：${local(gap.startedAt)}〜${local(gap.endedAt)}（日本時間）。この間の内容は補完していません。`);
+    lines.push('');
+  }
   if(metadata.meetingBrief)lines.push('## 会議の本筋', '', clean(metadata.meetingBrief.text), '', `（開始者・担当者が指定した進め方。参加者全員の合意ではない）${metadata.meetingBrief.needsReview?' 要再確認。':''}`, '');
   if(metadata.briefNeedsReview)lines.push('本筋を指定した原発言が訂正されています。設定は要再確認のため、議事録の判断軸には使用していません。','');
   return lines;

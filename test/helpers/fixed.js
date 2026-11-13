@@ -12,7 +12,7 @@ export async function fixedFixture(options={}){
   const oldKey=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY='mock-only';
   const policy={guildId:ids.guild,voiceChannelId:ids.vc,minutesForumId:ids.forum,responsePolicy:options.responsePolicy||'on_call',emptyGraceMs:1000,autoPublish:options.autoPublish??true};
   const store=options.store||new Store(options.path||':memory:');const requests=[],generated=[],tts=[],created=[],replies=[],dms=[],notices=[],streams=[],captures=[];let joins=0,destroys=0;
-  const app=createApp({store,serviceToken:'fixed-test-service',fixed:options.serverFixed===false?null:policy,
+  const app=createApp({store,serviceToken:'fixed-test-service',fixed:options.serverFixed===false?null:policy,heartbeatTimeoutMs:options.heartbeatTimeoutMs,heartbeatRecoveryMs:options.heartbeatRecoveryMs,
     modelAnalyze:options.modelAnalyze|| (async({state})=>{requests.push(state.request);const q=state.request.voiceRequest;return{result:{action:'summary',text:'A案は構成が簡単で、B案は変更しやすい案です。',reason:'直接回答',evidence:[{utteranceId:q.utteranceId,revision:q.revision}],notes:[]},usage:{estimatedUsd:null}};}),
     minutesGenerator:{generateDraft:async state=>{generated.push(structuredClone(state));if(options.minutesFail)throw new Error('private meeting upstream failure');if(options.generateDraft)return options.generateDraft(state);const d=emptyMinutes();const u=state.utterances.find(u=>u.final&&u.source!=='ai');if(u)d.overview=[{text:'二つの配線案を比較した。',evidence:[{utteranceId:u.id,revision:u.revision}]}];return d;}},
     ttsSynthesize:args=>{tts.push(args);if(options.ttsFail){queueMicrotask(()=>args.onError(new Error('private tts failure')));}else if(!options.holdTts)queueMicrotask(()=>{args.onChunk(Buffer.alloc(960));args.onDone();});return{abort(){}};}
