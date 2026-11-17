@@ -2,7 +2,7 @@ import { UserError as Error, UserError } from '../errors.js';
 import { Client, GatewayIntentBits, Events, MessageFlags, ChannelType, PermissionFlagsBits, AttachmentBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder,ChannelSelectMenuBuilder } from 'discord.js';
 import { joinVoiceChannel, entersState, VoiceConnectionStatus, EndBehaviorType } from '@discordjs/voice';
 import prism from 'prism-media';
-import { validateChannels,automaticTitle,policyMode } from './fixed-policy.js';
+import { validateChannels,automaticTitle } from './fixed-policy.js';
 import { fixedStatus } from './status.js';
 import { VoiceAddressing } from './addressing.js';
 import { FixedCompletionWorker } from './completion.js';
@@ -215,6 +215,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
         if(meeting!==current||current.closing)return;
         if(next.id===client.user.id){
           if(next.channelId!==current.channelId){void connectionLost(current,'bot_moved').catch(()=>{});return;}
+          if(next.serverMute||next.selfMute){current.addressing?.cancel();current.playback.stop(true);void bridge.api(bridge.path+'/events',{type:'configure',quiet:true}).catch(()=>{});}
           if(voiceUnavailable(next)){void connectionLost(current,'voice_input_disabled').catch(()=>{});return;}
         }
         if(old.channelId===current.channelId||next.channelId===current.channelId){
@@ -244,7 +245,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
       if(!policyReady)await initializePolicy(interaction.guild);else await validateChannels(interaction.guild,config.fixed);
       if(channel?.id!==config.fixed.voiceChannelId||humanCount(channel)===0)throw new Error('固定VCに参加してから開始してください。');
       if(outputChannelId&&outputChannelId!==config.fixed.minutesForumId)throw new Error('公開先は固定フォーラムです。');
-      mode=policyMode(config.fixed);outputChannelId=config.fixed.minutesForumId;topic=topic||automaticTitle(channel);
+      mode=mode||'minutes';if(!['minutes','assistant'].includes(mode))throw new Error('議事録のみ／音声参加から選んでください。');outputChannelId=config.fixed.minutesForumId;topic=topic||automaticTitle(channel);
     }
     if(!Object.hasOwn(modes,mode))throw new Error('表示された会議モードから選んでください。');
     if(!channel||channel.type!==ChannelType.GuildVoice)throw new Error('通常のボイスチャンネルに入ってから開始してください。');
@@ -409,13 +410,13 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
       }
       const action=interaction.options.getSubcommand();
       if(config.fixed&&['setup','destination'].includes(action))throw new Error('保存先は導入時の固定設定です。この操作では変更しません。');
-      if(config.fixed&&['mode','auto'].includes(action)&&!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild))throw new Error('応答方針の変更は管理者だけが操作できます。');
+      if(config.fixed&&action==='auto'&&!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild))throw new Error('応答方針の変更は管理者だけが操作できます。');
       if(action==='help'){await interaction.reply({...safe(help(interaction.options.getString('detail')==='developer',Boolean(config.fixed))),flags:MessageFlags.Ephemeral});return;}
       if(action==='setup'){requireAdministrator(interaction);const target=interaction.options.getChannel('channel'),clear=interaction.options.getBoolean('clear')===true;if(!target&&!clear)throw new Error('議事録の保存先を選ぶか clear で解除してください。');if(target&&clear)throw new Error('保存先指定と解除はどちらか一つを選んでください。');if(target)requireOutput(target,interaction.member,interaction.guild.members.me);await interaction.deferReply({flags:MessageFlags.Ephemeral});await service.api(`/api/guilds/${config.guildId}/settings`,{channelId:target?.id||null,actorId:interaction.user.id});await interaction.editReply(safe(target?`既定の保存先を <#${target.id}> に登録しました。新しい会議に適用し、確認するまで投稿しません。`:'既定の保存先を解除しました。新しい会議は非公開です。'));return;}
       if(action==='start'){
         if(!channel)throw new Error('通話に入ってから /start を使ってください。');
         const topic=interaction.options.getString('topic')||`Discord：${channel.name}`,mode=interaction.options.getString('mode'),outputChannelId=interaction.options.getChannel('output_channel')?.id;
-        if(config.fixed){await interaction.deferReply({flags:MessageFlags.Ephemeral});await begin(interaction,channel,interaction.options.getString('topic')||undefined,policyMode(config.fixed),outputChannelId,interaction.options.getString('purpose')||undefined);return;}
+        if(config.fixed){await interaction.deferReply({flags:MessageFlags.Ephemeral});await begin(interaction,channel,interaction.options.getString('topic')||undefined,interaction.options.getString('mode')||'minutes',outputChannelId,interaction.options.getString('purpose')||undefined);return;}
         if(!mode){
           const id=confirmations.issue('start',{id:channel.id},interaction.user.id);starts.set(id,{ownerId:interaction.user.id,channelId:channel.id,topic,outputChannelId,expiresAt:Date.now()+60000});
           await interaction.reply({...safe('モードを選んで開始してください。「議事録のみ」はAI音声なしです。選択するまでは記録しません。'),flags:MessageFlags.Ephemeral,components:chooseMode(id)});return;
@@ -475,7 +476,8 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
       }
       if(action==='mode'||action==='auto'){
         const mode=action==='mode'?interaction.options.getString('mode'):interaction.options.getBoolean('enabled')?'facilitator':null;
-        current.playback.stop(true);
+        if(config.fixed&&mode&&!['minutes','assistant'].includes(mode))throw new Error('議事録のみ／音声参加から選んでください。');
+        current.addressing?.cancel();current.playback.stop(true);
         await current.bridge.api(current.bridge.path+'/events',mode?{type:'configure',mode,actorId:interaction.user.id}:{type:'configure',quiet:true,actorId:interaction.user.id});
         await interaction.editReply(safe(mode?`モードを「${modes[mode]}」に変更しました。記録と会議IDは継続します。`:'AI音声・自律発言を停止しました。記録は続けます。/mode で再開します。'));return;
       }

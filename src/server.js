@@ -15,7 +15,7 @@ import { requestAllowed } from './network.js';
 
 import { MinutesGenerator, checkMinutes, minutesMarkdown, minutesStale } from './minutes.js';
 import { applyPublication, approveVersion, changeDestination, normalizePublications } from './publication.js';
-import { fixedPolicy as loadFixedPolicy,validatePolicy,policyMode } from './discord/fixed-policy.js';
+import { fixedPolicy as loadFixedPolicy,validatePolicy } from './discord/fixed-policy.js';
 import { stateMessage } from './state-sync.js';
 import { activeStatuses, canSpeak, modes } from './meeting.js';
 import { briefCommand,updateBrief,briefAcknowledgement,automaticSpeechAllowed,currentBrief } from './meeting-brief.js';
@@ -186,7 +186,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
         if(body.discord&&metadata.outputChannelId===undefined)metadata.outputChannelId=store.guildSettings(metadata.guildId).defaultMinutesChannelId;
         if (body.discord && !['guildId', 'voiceChannelId', 'ownerId'].every(k => /^\d{17,22}$/.test(metadata[k] || ''))) throw new Error('Discord会議の識別情報が不正です。');
         const c = new Controller({ mode: 'minutes', ...metadata });
-        if (policy)c.configure({mode:policyMode(policy)});else if (body.mode) c.configure({ mode: body.mode });
+        if (policy){if(body.mode&&!['minutes','assistant'].includes(body.mode))throw new Error('議事録のみ／音声参加から選んでください。');c.configure({mode:body.mode||'minutes'});}else if (body.mode) c.configure({ mode: body.mode });
         const r = { c, clients: new Set(), pending: null, tts: null, ttsEpoch: null, micOwner: null, heartbeatAt: 0 };
         sessions.set(c.state.id, r); save(r, 'created'); json(res, 201, c.snapshot()); return;
       }

@@ -11,7 +11,7 @@ export function transcribeSpeaker({speaker,startedAt=Date.now(),emit,onError,onU
   const failed=e=>{if(aborted||settled)return;aborted=true;try{onError(e);}finally{finish();}};
   const at=(ms,end=false)=>{if(ms==null)return null;const span=spans.findLast(s=>end?ms>s.offset:ms>=s.offset)||spans[0];return span?span.wall+ms-span.offset:startedAt+ms;};
   const dispatch=operation=>{if(aborted)return;if(ready){try{operation();}catch(e){failed(e);stt.abort();}}else queued.push(operation);};
-  const stt=connect({model:'gpt-transcribe',prompt:'日本語の技術会議。記録係の名前はワイガヤ（我ヶ谷）。呼びかけ例：ワイガヤ、今の話をまとめて。',emit:u=>{if(!aborted&&!settled)emit({...u,speaker,source:'discord',startMs:at(u.startMs),endMs:at(u.endMs,true)});},onUsage,onError:failed,onClose:()=>{if(!ended&&!aborted&&!settled)failed(new Error('音声認識の接続が予期せず終了しました。'));else finish();},
+  const stt=connect({model:'gpt-transcribe',prompt:'日本語の技術会議。固有名詞：ワイガヤ、我ヶ谷。',emit:u=>{if(!aborted&&!settled)emit({...u,speaker,source:'discord',startMs:at(u.startMs),endMs:at(u.endMs,true)});},onUsage,onError:failed,onClose:()=>{if(!ended&&!aborted&&!settled)failed(new Error('音声認識の接続が予期せず終了しました。'));else finish();},
     onReady:()=>{if(aborted)return;ready=true;const operations=queued;queued=[];bytes=0;try{for(const op of operations)op();}catch(e){failed(e);stt.abort();}},
   });
   function beginTurn(wall=Date.now()){

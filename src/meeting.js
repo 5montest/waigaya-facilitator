@@ -1,5 +1,5 @@
 import { UserError as Error } from './errors.js';
-export const modes = { minutes: '議事録のみ', assistant: '呼びかけた時だけ', facilitator: 'AIワイガヤ' };
+export const modes = { minutes: '議事録のみ', assistant: '音声参加（呼びかけた時だけ）', facilitator: 'AIワイガヤ' };
 export const activeStatuses = ['created', 'recording', 'paused', 'empty_grace'];
 export const isMeaningful = text => {
   const value = text.replace(/[\s、。！？!?…・]/g, '');

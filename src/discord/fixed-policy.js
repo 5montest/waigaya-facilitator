@@ -4,7 +4,7 @@ export function fixedPolicy(env=process.env,{required=false}={}) {
   const voiceChannelId=env.WAIGAYA_DISCORD_VOICE_CHANNEL_ID,minutesForumId=env.WAIGAYA_DISCORD_MINUTES_FORUM_ID;
   if(!voiceChannelId&&!minutesForumId&&!required)return null;
   for(const [name,value] of [['DISCORD_GUILD_ID',env.DISCORD_GUILD_ID],['WAIGAYA_DISCORD_VOICE_CHANNEL_ID',voiceChannelId],['WAIGAYA_DISCORD_MINUTES_FORUM_ID',minutesForumId]])if(!/^\d{17,22}$/.test(value||''))throw new UserError(`${name}に固定チャンネルのIDを設定してください。`);
-  const responsePolicy=env.WAIGAYA_DISCORD_RESPONSE_POLICY||'on_call';
+  const responsePolicy=env.WAIGAYA_DISCORD_RESPONSE_POLICY||'minutes';
   if(!['on_call','minutes','facilitator'].includes(responsePolicy))throw new UserError('応答方針はon_call / minutes / facilitatorから設定してください。');
   const emptyGraceMs=Number(env.WAIGAYA_DISCORD_EMPTY_GRACE_MS||180000);
   if(!Number.isInteger(emptyGraceMs)||emptyGraceMs<1000||emptyGraceMs>3600000)throw new UserError('退出猶予は1000〜3600000msで設定してください。');
