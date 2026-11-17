@@ -1,3 +1,4 @@
+import { knownActionValue } from '../action-display.js';
 import { AttachmentBuilder,ChannelType,PermissionFlagsBits,ChannelFlagsBitField,MessageFlags,escapeMarkdown } from 'discord.js';
 import { UserError } from '../errors.js';
 import { requireFormal,digest,unresolved,publicationMarkdown } from '../publication.js';
@@ -66,34 +67,35 @@ export function selectMinutesHighlights(document,{max=6}={}) {
 }
 const decisionStatusLabel=item=>item?.status==='deferred'?'（保留）':item?.status==='rejected'?'（却下）':'';
 function actionStatusLabel(item,action) {
-  const owner=previewText(item?.owner||'担当者',40);
+  const value=knownActionValue(item?.owner);
+  if(!value||['none','conflict'].includes(item?.assignment))return '';
+  const owner=previewText(value,40);
   const assignment=item?.assignment;
   if(assignment==='explicit'){
     if(action?.ownerUserId&&action?.suppressReason)return `担当：${owner}（通知なし：${mentionReasonLabel(action.suppressReason)}）`;
     return `担当：${owner}（発言上の指定・ID未確認）`;
   }
-  if(assignment==='proposed')return `担当候補：${previewText(item?.owner||'不明',40)}（通知しません）`;
-  if(assignment==='conflict')return '担当：担当未確定（要確認）';
-  if(assignment==='none')return '担当：担当者特定不可';
+  if(assignment==='proposed')return `担当候補：${owner}（通知しません）`;
   // v1文書: 従来どおり担当文字列を表示（通知対象外）。
-  return `担当：${previewText(item?.owner||'不明',40)}`;
+  return `担当：${owner}`;
 }
 const ACTION_ITEM_LIMIT=5;
 function actionItemLines(item,action,{compact=false}={}) {
   const lines=[[plain('- '+previewText(item.text,compact?100:160))]];
-  if(compact){
-    // 本文長でトークンを落とす場合は通知せず「担当者特定不可」へフォールバックする。
-    const explicit=item?.assignment==='explicit'||item?.assignment===undefined;
-    lines.push([plain(`  ${explicit?'担当：担当者特定不可（本文の長さ制限）':actionStatusLabel(item,action)}／期限：${previewText(item?.deadline||'不明',40)}`)]);
-  }else if(action?.notify&&action?.ownerUserId){
-    lines.push([plain('  担当：'),mention(action.ownerUserId),plain('（発言上の指定・未確認）'),plain(`／期限：${previewText(item?.deadline||'不明',40)}`)]);
-  }else lines.push([plain(`  ${actionStatusLabel(item,action)}／期限：${previewText(item?.deadline||'不明',40)}`)]);
+  const deadline=knownActionValue(item?.deadline),due=deadline?`期限：${previewText(deadline,40)}`:'';
+  if(!compact&&action?.notify&&action?.ownerUserId){
+    lines.push([plain('  担当：'),mention(action.ownerUserId),plain('（発言上の指定・未確認）'),...(due?[plain('／'+due)]:[])]);
+  }else {
+    // A compact item omits the owner rather than inventing an unknown owner.
+    const owner=compact?'':actionStatusLabel(item,action),details=[owner,due].filter(Boolean).join('／');
+    if(details)lines.push([plain('  '+details)]);
+  }
   return lines;
 }
 const segmentsLength=segments=>Array.from(renderSegments(segments)).length;
 const linesLength=lines=>lines.reduce((total,segments)=>total+1+segmentsLength(segments),0);
 // アクション節は通知トークンの優先枠。入り切らない項目はトークンを落として
-// 「担当者特定不可（本文の長さ制限）」へフォールバックし、通知を抑止する。
+// 担当欄を省略し、通知を抑止する。
 function buildActionBlockWithBudget(items,planByIndex,budget) {
   const list=(items||[]).slice(0,ACTION_ITEM_LIMIT);
   if(!list.length)return {block:null,used:0};

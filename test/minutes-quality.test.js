@@ -68,7 +68,7 @@ test('v1文書は従来どおり読み・描画・検証でき、canonicalMinute
   assert.equal(checked.actionItems[0].owner, null);
   assert.equal(checked.actionItems[0].deadline, null);
   const markdown = minutesMarkdown(state, { version: 1, document: checked });
-  for (const label of ['## 概要', '## 主な案', '## 案の比較・議論', '## 決定候補（確認待ち）', '## 未決事項', '## 次のアクション（候補）', '担当：不明']) assert.ok(markdown.includes(label), label);
+  for (const label of ['## 概要', '## 主な案', '## 案の比較・議論', '## 決定候補（確認待ち）', '## 未決事項', '## 次のアクション（候補）']) assert.ok(markdown.includes(label), label);
   assert.ok(!markdown.includes('## 論点別の議論'));
   const canonical = canonicalMinutes(checked);
   assert.equal(canonical.schemaVersion, 1);
@@ -356,7 +356,7 @@ test('撤回・見解変化・条件付き比較・反対意見・数値変化�
   assert.equal(document.decisionCandidates[0].status, 'deferred');
   assert.equal(document.actionItems[0].assignment, 'explicit'); // 自己申告（私がやります）
   const markdown = minutesMarkdown(state, { version: 1, document, confirmedDecisions: [] });
-  for (const label of ['【比較】', '【反対・対立】', '【背景】', '【検証】', '【費用】', '【日程】', '状態：保留', '担当判定：発言上の担当指定（AI抽出・未確認）', '## 決定事項（人が確認済み）\n\n該当なし']) assert.ok(markdown.includes(label), label);
+  for (const label of ['【比較】', '【反対・対立】', '【背景】', '【検証】', '【費用】', '【日程】', '状態：保留', '## 決定事項（人が確認済み）\n\n該当なし']) assert.ok(markdown.includes(label), label);
   assert.ok(!/undefined|NaN|\[object Object\]/.test(markdown));
 });
 
@@ -400,7 +400,7 @@ test('v2 minutesMarkdownは論点別・カテゴリラベル・keyFacts・記録
   assert.match(markdown, /- 【比較】A案3,200円とB案2,400円。/);
   assert.match(markdown, /## 重要な数値・前提[\s\S]*【費用】部品原価3,200円。/);
   assert.match(markdown, /## 決定候補（確認待ち）[\s\S]*状態：候補/);
-  assert.match(markdown, /## 次のアクション（候補）[\s\S]*担当判定：担当者特定不可/);
+  assert.doesNotMatch(markdown, /担当判定：担当者特定不可|担当：不明|期限：不明/);
   assert.match(markdown, /## 記録の注記/);
   assert.ok(!/undefined|NaN|\[object Object\]/.test(markdown));
   // 根拠が古い項目は要再確認と表示する（公開添付として読めるプレーンテキストのまま）。

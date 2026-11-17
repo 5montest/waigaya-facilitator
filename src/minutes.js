@@ -1,3 +1,4 @@
+import { knownActionValue } from './action-display.js';
 import { UserError as Error } from './errors.js';
 import Ajv from 'ajv';
 import { minutesEndpoint, minutesKey, minutesModel, minutesEffort, minutesRates, minutesEstimateBasis } from './models.js';
@@ -442,7 +443,7 @@ const commonRules = `あなたは日本語の会議の記録係です。会話�
 - 会話の順序を反映し、途中で見解が変わった場合は変化（撤回・訂正・条件変更）を残します。
 - 具体的な数字・技術名称・単位・前提条件・日付をそのまま保ちます。数値が変わった場合は古い値と新しい値の両方を根拠付きで残します。
 - 「何も決まっていない」場合も議論の内容を失わせません。重要でない細部より、少数の重要命題を優先し、重複を除きます。
-- 不明な担当・期限はnullにし、名前や締切を想像しません。根拠発言に明記された文字列だけを使います。
+- 不明な担当・期限はnullにし、名前や締切を想像しません。本文にも「担当不明」「期限未定」などの補足を付けません。根拠発言に明記された文字列だけを使います。
 - 根拠は入力に示された発言idとrevisionをそのまま一対で書き、存在しないid・revisionを作りません。全項目にevidenceを付けます。
 - textは日本語で簡潔に（原則100文字以内、最大400文字）。全文を写さず要点を書きます。
 - 出力は指定JSON Schemaのみ。全プロパティを必ず含め、該当なしは空配列にします。`;
@@ -858,6 +859,13 @@ const KEY_FACT_LABELS = Object.freeze({ number: '数値', cost: '費用', date: 
 const ASSIGNMENT_LABELS = Object.freeze({ explicit: '発言上の担当指定（AI抽出・未確認）', proposed: '担当候補（未確認）', none: '担当者特定不可', conflict: '担当者未確定（矛盾）' });
 const DECISION_STATUS_LABELS = Object.freeze({ candidate: '候補', deferred: '保留', rejected: '見送り' });
 
+function actionDetails(item, withAssignment = false) {
+  const owner=item.assignment==='conflict'?null:knownActionValue(item.owner),deadline=knownActionValue(item.deadline);
+  const clean=text=>text.replace(/[\r\n]/g,' ');
+  return [clean(item.text),owner?`担当：${clean(owner)}`:null,deadline?`期限：${clean(deadline)}`:null,
+    withAssignment&&owner&&['explicit','proposed'].includes(item.assignment)?`担当判定：${ASSIGNMENT_LABELS[item.assignment]}`:null].filter(Boolean).join('／');
+}
+
 function markdownHeader(state, version, metadata) {
   const clean = s => String(s).replace(/[\r\n]/g, ' ');
   const stale = minutesStale(state, version);
@@ -903,7 +911,7 @@ function minutesMarkdownV1(state, version) {
   section('決定事項（人が確認済み）', version.confirmedDecisions || state.decisions || []);
   section('決定候補（確認待ち）', version.document.decisionCandidates);
   section('未決事項', version.document.openIssues);
-  section('次のアクション（候補）', version.document.actionItems, e => `${clean(e.text)}／担当：${clean(e.owner || '不明')}／期限：${clean(e.deadline || '不明')}`);
+  section('次のアクション（候補）', version.document.actionItems, e => actionDetails(e));
   lines.push('## 記録の注記', '', '決定候補は参加者の確認が別途必要です。根拠の発言ID（utteranceId@revision）はローカルの記録データに保持されており、議事録本文からは省いています。');
   return markdownNotes(lines, state).join('\n') + '\n';
 }
@@ -932,7 +940,7 @@ function minutesMarkdownV2(state, version) {
   section('決定事項（人が確認済み）', version.confirmedDecisions || state.decisions || []);
   section('決定候補（確認待ち）', document.decisionCandidates || [], e => `${clean(e.text)}（状態：${DECISION_STATUS_LABELS[e.status] || '候補'}${e.reason ? `、理由：${clean(e.reason)}` : ''}）`);
   section('未決事項', document.openIssues || []);
-  section('次のアクション（候補）', document.actionItems || [], e => `${clean(e.text)}／担当：${clean(e.owner || '不明')}／期限：${clean(e.deadline || '不明')}／担当判定：${ASSIGNMENT_LABELS[e.assignment] || ASSIGNMENT_LABELS.none}`);
+  section('次のアクション（候補）', document.actionItems || [], e => actionDetails(e, true));
   lines.push('## 記録の注記', '', '決定候補は参加者の確認が別途必要です。決定候補の状態（候補・保留・見送り）は議論上の区分で、人の確認状態ではありません。根拠の発言ID（utteranceId@revision）はローカルの記録データに保持されており、議事録本文からは省いています。');
   return markdownNotes(lines, state).join('\n') + '\n';
 }
