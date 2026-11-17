@@ -23,7 +23,7 @@ import { minutesMarkdown, minutesStale, minutesProgressLabel } from '../minutes.
 import * as minutesCore from '../minutes.js';
 import { loadAliasDictionary,prepareMentionPlan,mentionPlanPreview } from './owner-mentions.js';
 
-export async function runBot({ config = discordConfig(), client = new Client({ intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildVoiceStates] }), join = joinVoiceChannel, ready = entersState, bridgeFactory = (base,options)=>new MeetingBridge(base,options), transcribe = transcribeSpeaker } = {}) {
+export async function runBot({ config = discordConfig(), client = new Client({ intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildVoiceStates] }), join = joinVoiceChannel, ready = entersState, bridgeFactory = (base,options)=>new MeetingBridge(base,options), transcribe = transcribeSpeaker, drainTimeoutMs = 123000 } = {}) {
   if(!loadOpenAIKey().configured) throw new Error('OpenAIキーを設定してください。');
   if(!config.serviceToken) throw new Error('Bot・会議サーバー間の認証ファイルを設定してください。discord-setup.mdを参照してください。');
   const confirmations=new Confirmations(), publisher=new DiscordMinutesPublisher(), starts=new Map(), editorForms=new Map();
@@ -79,13 +79,14 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
     current.acceptAudio=false;
     for(const item of current.captures.values()){
       item.activity.end();item.opus.unpipe(item.decoder);item.opus.destroy();item.decoder.destroy();
-      if(abort)item.stt.abort();else item.stt.end();
     }
+    for(const entry of current.speakers.values()){clearTimeout(entry.idleTimer);if(abort)entry.stt.abort();else entry.stt.end();}
+    current.speakers.clear();
     current.captures.clear();current.activeSpeakers.clear();current.bridge.send({type:'vad',active:false});
   }
   async function drain(current,{abort=false}={}){
     stopCapture(current,{abort});let timer,timedOut=false;
-    if(!abort)await Promise.race([Promise.all([...current.transcriptions].map(s=>s.closed)),new Promise(resolve=>{timer=setTimeout(()=>{timedOut=true;resolve();},13000);})]).finally(()=>clearTimeout(timer));
+    if(!abort)await Promise.race([Promise.all([...current.transcriptions].map(s=>s.closed)),new Promise(resolve=>{timer=setTimeout(()=>{timedOut=true;resolve();},drainTimeoutMs);})]).finally(()=>clearTimeout(timer));
     if(abort||timedOut)await fault(current,'stt',{gap:true});
     for(const stt of current.transcriptions)stt.abort();current.transcriptions.clear();
     await current.bridge.queue;
@@ -139,7 +140,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
       connection.on('error',()=>{if(current)void connectionLost(current).catch(()=>{});else rejectJoining(new Error('通話接続中にエラーが発生しました。'));});
       await Promise.race([Promise.resolve().then(()=>ready(connection,VoiceConnectionStatus.Ready,20000)),joinFailure]);
       if(voiceUnavailable(channel.guild.voiceStates.cache.get(client.user.id)))throw new Error('Botの音声受信が無効になっています。');
-      current={bridge,connection,channel,channelId:channel.id,captures:new Map(),sttFailures:new Map(),blockedUntil:new Map(),activeSpeakers:new Set(),transcriptions:new Set(),acceptAudio:true,closing:false,closed:false};
+      current={bridge,connection,channel,channelId:channel.id,captures:new Map(),speakers:new Map(),sttFailures:new Map(),blockedUntil:new Map(),activeSpeakers:new Set(),transcriptions:new Set(),acceptAudio:true,closing:false,closed:false};
       playback=new DiscordPlayback(bridge,{onFailure:()=>{void fault(current,'tts');console.error('AI音声の再生に失敗しました。文字起こしは継続します。');}});
       current.playback=playback;current.addressing=config.fixed?new VoiceAddressing(current,{names:config.addressNames,
         canSetBrief:userId=>userId===bridge.state.ownerId||channel.members.get(userId)?.permissions?.has(PermissionFlagsBits.ManageGuild)||(config.controlRoleIds||[]).some(id=>channel.members.get(userId)?.roles?.cache?.has(id)),
@@ -150,37 +151,56 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
       const capture=userId=>{
         if(meeting!==current||current.closing||!current.acceptAudio||current.bridge.state.status!=='recording'||current.captures.has(userId)||Date.now()<(current.blockedUntil.get(userId)||0))return;
         const member=channel.members.get(userId);if(!member||member.user.bot)return;
-        const activity=new VoiceActivity(active=>{
-          if(meeting!==current||current.closing)return;
-          if(active){current.activeSpeakers.add(userId);playback.speech(true,{interrupt:false});bridge.send({type:'vad',active:true,interrupt:false});}
-          else{current.activeSpeakers.delete(userId);if(current.activeSpeakers.size===0){playback.speech(false);bridge.send({type:'vad',active:false});}}
-        },{onInterrupt:()=>{
-          if(meeting!==current||current.closing)return;
-          playback.speech(true);
-        }});
+        let item,entry=current.speakers.get(userId);
         const startedAt=Date.now(),speaker=`${member.displayName.slice(0,50)} (${userId})`;current.lastCaptureAt=startedAt;
-        let opus,decoder,stt,failedOnce=false;
-        const failed=kind=>{
-          if(failedOnce||current.closed)return;failedOnce=true;
-          activity.end();opus?.unpipe(decoder);opus?.destroy();decoder?.destroy();stt?.abort();current.captures.delete(userId);
+        // Retire at a turn boundary; late results retain their original session/time.
+        if(entry&&startedAt-entry.createdAt>=50*60000){clearTimeout(entry.idleTimer);current.speakers.delete(userId);entry.stt.end();entry=null;}
+        const failEntry=(target,kind)=>{
+          if(target.failed||current.closed)return;target.failed=true;
+          clearTimeout(target.idleTimer);
+          const owned=current.speakers.get(userId)===target;
+          if(owned){
+            const live=current.captures.get(userId);
+            if(live?.stt===target.stt){live.activity.end();current.captures.delete(userId);live.opus.unpipe(live.decoder);live.opus.destroy();live.decoder.destroy();}
+            current.speakers.delete(userId);
+          }
+          target.stt?.abort();
+          void fault(current,kind,{gap:true,startedAt:target.lastTurnAt});
+          // An old connection may finish after pause/resume or rotation. It must
+          // not remove, mute, block or mark healthy the new capture.
+          if(!owned)return;
           const failures=(current.sttFailures.get(userId)||0)+1;current.sttFailures.set(userId,failures);if(failures>=3)current.blockedUntil.set(userId,Date.now()+60000);
-          void fault(current,kind,{gap:true,startedAt});
-          // Only this stream fails; a future speaking event can reconnect it.
           const timer=setTimeout(()=>{if(meeting===current&&current.acceptAudio&&connection.receiver.speaking.users.has(userId))capture(userId);},failures>=3?60000:Math.min(30000,1000*2**(failures-1)));timer.unref();
         };
         try{
-          opus=connection.receiver.subscribe(userId,{end:{behavior:EndBehaviorType.AfterSilence,duration:500}});
-          decoder=new prism.opus.Decoder({rate:48000,channels:2,frameSize:960});
-          stt=transcribe({speaker,startedAt,emit:u=>{if(!current.closed){current.sttFailures.delete(userId);current.blockedUntil.delete(userId);if(current.sttFailures.size===0&&bridge.state.health.stt==='failed')void bridge.enqueue({type:'health',kind:'stt',healthy:true}).catch(()=>{});void bridge.enqueue({type:'utterance',utterance:{...u,userId}}).then(()=>{const saved=bridge.state.utterances.find(v=>v.id===u.id);if(saved)current.addressing?.observe(saved,userId);}).catch(()=>{});}},
-            onUsage:usage=>{if(!current.closed)void bridge.enqueue({type:'audio_usage',usage}).catch(()=>{});},
-            onClose:()=>current.transcriptions.delete(stt),onError:()=>failed('stt')});
-          if(failedOnce){stt.abort();return;}
-          current.transcriptions.add(stt);current.captures.set(userId,{opus,decoder,stt,activity});
-          decoder.on('data',buffer=>{if(!current.acceptAudio)return;try{activity.write(buffer);stt.write(buffer);}catch{failed('stt');}});
-          decoder.on('end',()=>{activity.end();current.captures.delete(userId);stt.end();});
-          opus.on('error',()=>failed('stt'));decoder.on('error',()=>failed('stt'));
-          opus.pipe(decoder);
-        }catch{failed('stt');}
+          if(!entry){
+            entry={createdAt:startedAt,lastTurnAt:startedAt,failed:false};const target=entry;current.speakers.set(userId,target);
+            target.stt=transcribe({speaker,startedAt,emit:u=>{if(!current.closed){
+              if(current.speakers.get(userId)===target){current.sttFailures.delete(userId);current.blockedUntil.delete(userId);if(current.sttFailures.size===0&&bridge.state.health.stt==='failed')void bridge.enqueue({type:'health',kind:'stt',healthy:true}).catch(()=>{});}
+              void bridge.enqueue({type:'utterance',utterance:{...u,userId}}).then(()=>{const saved=bridge.state.utterances.find(v=>v.id===u.id);if(saved)current.addressing?.observe(saved,userId);}).catch(()=>{});
+            }},onUsage:usage=>{if(!current.closed)void bridge.enqueue({type:'audio_usage',usage}).catch(()=>{});},
+              onClose:()=>{current.transcriptions.delete(target.stt);if(current.speakers.get(userId)===target)current.speakers.delete(userId);},onError:()=>failEntry(target,'stt')});
+            if(target.failed){target.stt.abort();return;}
+            current.transcriptions.add(target.stt);
+          }
+          clearTimeout(entry.idleTimer);entry.lastTurnAt=startedAt;entry.stt.beginTurn?.(startedAt);
+          const activity=new VoiceActivity(active=>{
+            if(meeting!==current||current.closing||current.captures.get(userId)!==item)return;
+            if(active){current.activeSpeakers.add(userId);playback.speech(true,{interrupt:false});bridge.send({type:'vad',active:true,interrupt:false});}
+            else{current.activeSpeakers.delete(userId);if(current.activeSpeakers.size===0){playback.speech(false);bridge.send({type:'vad',active:false});}}
+          },{onInterrupt:()=>{if(meeting===current&&!current.closing&&current.captures.get(userId)===item)playback.speech(true);}});
+          const opus=connection.receiver.subscribe(userId,{end:{behavior:EndBehaviorType.AfterSilence,duration:500}});
+          const decoder=new prism.opus.Decoder({rate:48000,channels:2,frameSize:960});
+          item={opus,decoder,stt:entry.stt,activity};current.captures.set(userId,item);
+          decoder.on('data',buffer=>{if(!current.acceptAudio||current.captures.get(userId)!==item)return;try{activity.write(buffer);entry.stt.write(buffer);}catch{failEntry(entry,'stt');}});
+          decoder.on('end',()=>{
+            if(current.captures.get(userId)!==item)return;
+            activity.end();current.captures.delete(userId);
+            if(entry.stt.endTurn){entry.stt.endTurn();entry.idleTimer=setTimeout(()=>{if(current.speakers.get(userId)===entry){current.speakers.delete(userId);entry.stt.end();}},60000);entry.idleTimer.unref();}
+            else{current.speakers.delete(userId);entry.stt.end();}
+          });
+          opus.on('error',()=>failEntry(entry,'stt'));decoder.on('error',()=>failEntry(entry,'stt'));opus.pipe(decoder);
+        }catch{if(entry)failEntry(entry,'stt');}
       };
       connection.receiver.speaking.on('start',capture);
       current.captureActive=()=>{for(const userId of connection.receiver.speaking.users.keys())capture(userId);};

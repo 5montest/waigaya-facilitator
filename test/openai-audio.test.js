@@ -109,3 +109,27 @@ test('STT失敗の種別だけを使用量へ残し、生のエラー本文を�
     assert.equal(usage[0].failureCategory,expected);assert.ok(!JSON.stringify(usage).includes('private'));c.abort();
   }
 });
+
+test('STTは10秒を超えても進捗があれば確定を待つが、各発言の最大待機は120秒',t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:100000});
+ const errors=[],output=[];const c=connectStt({emit:u=>output.push(u),onReady(){},onError:e=>errors.push(e),onClose(){},WebSocketImpl:FakeSocket});
+ const ws=FakeSocket.last;ws.message({type:'session.updated'});c.voice(true);c.send(Buffer.alloc(4800));c.voice(false);c.end();ws.message({type:'input_audio_buffer.committed',item_id:'slow'});
+ t.mock.timers.tick(9000);ws.message({type:'conversation.item.input_audio_transcription.delta',item_id:'slow',delta:'途中'});
+ t.mock.timers.tick(20000);assert.equal(ws.closed,false);
+ ws.message({type:'conversation.item.input_audio_transcription.completed',item_id:'slow',transcript:'確定'});assert.equal(output.at(-1).final,true);assert.equal(ws.closed,true);assert.equal(errors.length,0);
+ const bounded=connectStt({emit(){},onReady(){},onError:e=>errors.push(e),onClose(){},WebSocketImpl:FakeSocket});const w=FakeSocket.last;w.message({type:'session.updated'});bounded.voice(true);bounded.send(Buffer.alloc(4800));bounded.voice(false);w.message({type:'input_audio_buffer.committed',item_id:'forever'});
+ for(let n=0;n<5;n++){t.mock.timers.tick(20000);w.message({type:'conversation.item.input_audio_transcription.delta',item_id:'forever',delta:'途中'});assert.equal(w.closed,false);}
+ t.mock.timers.tick(20000);assert.equal(w.closed,true);assert.equal(errors.length,1);
+});
+test('確定がcommit確認より先に届いても不要な確定待ちを残さない',()=>{
+ const output=[],errors=[];const c=connectStt({emit:u=>output.push(u),onReady(){},onError:e=>errors.push(e),onClose(){},WebSocketImpl:FakeSocket});const ws=FakeSocket.last;
+ ws.message({type:'session.updated'});c.voice(true);c.send(Buffer.alloc(4800));c.end();ws.message({type:'conversation.item.input_audio_transcription.completed',item_id:'early',transcript:'完了'});assert.equal(ws.closed,false);
+ ws.message({type:'input_audio_buffer.committed',item_id:'early'});assert.equal(ws.closed,true);assert.equal(output.at(-1).final,true);assert.equal(errors.length,0);
+});
+test('接続再利用中も30秒間進捗のない発言は検出し、他の発言で期限を延ばさない',t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:100000});const errors=[];
+ const c=connectStt({emit(){},onReady(){},onError:e=>errors.push(e),onClose(){},WebSocketImpl:FakeSocket});const ws=FakeSocket.last;ws.message({type:'session.updated'});
+ c.voice(true);c.send(Buffer.alloc(4800));c.voice(false);ws.message({type:'input_audio_buffer.committed',item_id:'stuck'});t.mock.timers.tick(20000);
+ c.voice(true);c.send(Buffer.alloc(4800));c.voice(false);ws.message({type:'input_audio_buffer.committed',item_id:'next'});ws.message({type:'conversation.item.input_audio_transcription.completed',item_id:'next',transcript:'次は成功'});
+ t.mock.timers.tick(10000);assert.equal(ws.closed,true);assert.equal(errors.length,1);
+});

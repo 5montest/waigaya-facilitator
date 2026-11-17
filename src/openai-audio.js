@@ -54,8 +54,16 @@ export function connectStt({ emit, onReady, onError, onClose, onUsage = () => {}
   const assembler = new TranscriptAssembler(emit);
   const ws = new WebSocketImpl('wss://api.openai.com/v1/realtime?intent=transcription', { headers: { Authorization: `Bearer ${keyFor('openai')}` }, handshakeTimeout: 10000 });
   let ready = false, closing = false, cancelled = false, failed = false, frames = 0, boundary = 0, pendingBytes = 0, hasSpeech = false, active = false, committedMs = 0;
-  const inFlight = new Set();
+  const inFlight = new Set(), completed = new Set(), awaiting = [], requests = new Map();
   let closeTimer, failureCategory;
+  // Each committed turn has its own bounded deadline; other speakers/turns cannot keep it alive.
+  function watch() {
+    clearTimeout(closeTimer);
+    const pending = [...awaiting, ...requests.values()];
+    if (!pending.length || failed || cancelled) return;
+    const deadline = Math.min(...pending.map(r => Math.min(r.started + 120000, r.progress + 30000)));
+    closeTimer = setTimeout(() => fail('文字起こしの確定を待ちましたが応答が途絶えました。', 'finalize_timeout'), Math.max(1, deadline - Date.now()));
+  }
   const fail = (message, category) => { if (!failed && !cancelled) { failed = true; failureCategory = category; onError(new Error(message)); ws.terminate(); } };
   const setupTimer = setTimeout(() => fail('OpenAI文字起こしの設定がタイムアウトしました。', 'setup_timeout'), 12000);
   function send(event) { ws.send(JSON.stringify(event)); }
@@ -63,6 +71,7 @@ export function connectStt({ emit, onReady, onError, onClose, onUsage = () => {}
     if (!ready || pendingBytes < 4800 || !hasSpeech) return false;
     const endMs = frames / 24;
     assembler.commit({ startMs: boundary / 24, endMs });
+    awaiting.push({ started: Date.now(), progress: Date.now() }); watch();
     committedMs += endMs - boundary / 24;
     boundary = frames; pendingBytes = 0; hasSpeech = active;
     assembler.currentSpan = { startMs: boundary / 24, endMs: endMs };
@@ -82,9 +91,18 @@ export function connectStt({ emit, onReady, onError, onClose, onUsage = () => {}
         fail('OpenAI文字起こしに失敗しました。接続・利用設定を確認してください。', category); return;
       }
       if (event.type === 'session.updated') { clearTimeout(setupTimer); ready = true; onReady(); }
-      if (event.type === 'input_audio_buffer.committed') inFlight.add(event.item_id);
+      if (event.type === 'input_audio_buffer.committed') {
+        const request = awaiting.shift();
+        if (!completed.has(event.item_id)) { inFlight.add(event.item_id); if (request) requests.set(event.item_id, request); }
+      }
       assembler.consume(event);
-      if (event.type === 'conversation.item.input_audio_transcription.completed') inFlight.delete(event.item_id);
+      if (event.type === 'conversation.item.input_audio_transcription.delta') {
+        const request = requests.get(event.item_id); if (request) request.progress = Date.now();
+      }
+      if (event.type === 'conversation.item.input_audio_transcription.completed') {
+        completed.add(event.item_id); inFlight.delete(event.item_id); requests.delete(event.item_id);
+      }
+      watch();
       finishIfDone();
     } catch { fail('OpenAI文字起こしの応答を処理できません。', 'protocol_error'); }
   });
@@ -116,7 +134,7 @@ export function connectStt({ emit, onReady, onError, onClose, onUsage = () => {}
       if (closing) return;
       if (!ready) { closing = true; ws.terminate(); return; }
       active = false; commit(); closing = true;
-      closeTimer = setTimeout(() => fail('最後の文字起こしが時間内に確定しませんでした。', 'finalize_timeout'), 10000);
+      watch();
       finishIfDone();
     },
     abort() { cancelled = true; closing = true; ws.terminate(); },

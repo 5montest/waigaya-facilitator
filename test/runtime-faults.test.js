@@ -91,9 +91,9 @@ test('実環境想定: VC接続待ち中の非同期errorイベントでプロ�
  try{await r.action('start');assert.equal(emissionError,undefined);assert.equal(r.runtime.meeting,null);assert.equal((await r.state()).status,'paused');assert.equal((await r.state()).health.connection,'failed');assert.equal(r.destroys(),1);}finally{await r.close();}
 });
 
-test('実環境想定: 最終STTが13秒で確定しなければ欠損を残し、一度だけ終了・投稿する',async()=>{
+test('実環境想定: 最終STTがドレイン期限内に確定しなければ欠損を残し、一度だけ終了・投稿する',async()=>{
  let resolveClosed,draining=false,aborts=0;const closed=new Promise(resolve=>{resolveClosed=resolve;});
- const r=await fixedFixture({keepWorkerTimer:true,transcribe:args=>({closed,write(){},end(){draining=true;},abort(){aborts++;resolveClosed();args.onClose();}})});
+ const r=await fixedFixture({drainTimeoutMs:150,keepWorkerTimer:true,transcribe:args=>({closed,write(){},end(){draining=true;},abort(){aborts++;resolveClosed();args.onClose();}})});
  try{await r.action('start');const current=r.runtime.meeting,args=await r.capture();args.emit({id:'durable-before-timeout',source:'discord',text:'終了前に確定できた発言を残します。',final:true,startMs:args.startedAt,endMs:Date.now()});await current.bridge.queue;const ending=r.action('end');await waitFor(()=>draining);r.connection.emit(VoiceConnectionStatus.Disconnected);assert.equal(r.runtime.meeting,current);await ending;assert.ok(aborts>0);assert.equal(r.runtime.meeting,null);const state=await r.complete();assert.equal(state.health.stt,'failed');assert.ok(state.gaps.some(g=>g.kind==='stt'));assert.equal(state.utterances.length,1);assert.equal(r.generated.length,1);assert.equal(r.created.length,1);assert.equal(r.destroys(),1);args.emit({id:'too-late',source:'discord',text:'中断後の遅い結果',final:true,startMs:args.startedAt,endMs:Date.now()});await current.bridge.queue;assert.equal((await r.state()).utterances.length,1);}finally{resolveClosed();await r.close();}
 });
 

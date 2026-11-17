@@ -88,7 +88,7 @@ export function createApp({ store = new Store(), modelAnalyze = analyze, sttConn
   }
   async function drainBrowser(r) {
     r.finishDraining = true; r.sttHandle?.end(); let timer, timeout = false;
-    await Promise.race([r.sttDrain, new Promise(resolve => { timer = setTimeout(() => { timeout = true; resolve(); }, 13000); })]).finally(() => clearTimeout(timer));
+    await Promise.race([r.sttDrain, new Promise(resolve => { timer = setTimeout(() => { timeout = true; resolve(); }, 123000); })]).finally(() => clearTimeout(timer));
     if (timeout) { r.sttHandle?.abort(); r.c.state.gaps.push({ kind: 'stt_finalize_timeout', startedAt: null, endedAt: Date.now() }); }
     r.sttDrain = null; r.finishDraining = false;
   }

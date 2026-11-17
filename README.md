@@ -123,3 +123,5 @@ npm audit --omit=dev
 リソースの限られた環境で全体テストを実行する場合は `node --test --test-concurrency=2 test/*.test.js` で並列数を制限できます。今回の検証結果と導入・ロールバック手順は [途中保存と再開](docs/minutes-checkpoints.md) を参照してください。
 
 入力の心拍が一時的に遅れた場合はAI音声を止め、同じ会議で30秒間復旧を待ちます。復旧・障害終了の条件と、分断された会議を統合する運用手順は[入力監視の復旧](docs/heartbeat-recovery.md)を参照してください。
+
+文字起こしの接続再利用・確定待ち・運用上の制限は、[2026-11-17のSTT修正記録](docs/stt-reliability-20261117.md)を参照してください。
