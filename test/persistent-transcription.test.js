@@ -28,3 +28,11 @@ test('50分を超えた話者接続は次の発言前に交代し、古い接続
   assert.equal(r.captures.length,2);assert.equal(r.runtime.meeting.captures.get(ids.owner),live);assert.equal(r.runtime.meeting.activeSpeakers.has(ids.owner),true);
  }finally{await r.close();}
 });
+
+test('終了済みのDiscord音声ストリームの遅延エラーは同じSTTの次の受信を消さない',async()=>{
+ const r=await fixedFixture();try{
+  await r.action('start');await r.emit('最初の発言');const old=r.streams[0];await r.capture();const current=r.runtime.meeting,live=current.captures.get(ids.owner);
+  old.emit('error',new Error('old opus stream'));await current.bridge.queue;
+  assert.equal(current.captures.get(ids.owner),live);assert.equal(current.transcriptions.size,1);assert.equal(current.activeSpeakers.has(ids.owner),true);assert.equal(current.sttFailures.size,0);
+ }finally{await r.close();}
+});

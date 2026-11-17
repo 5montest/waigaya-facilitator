@@ -199,7 +199,8 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
             if(entry.stt.endTurn){entry.stt.endTurn();entry.idleTimer=setTimeout(()=>{if(current.speakers.get(userId)===entry){current.speakers.delete(userId);entry.stt.end();}},60000);entry.idleTimer.unref();}
             else{current.speakers.delete(userId);entry.stt.end();}
           });
-          opus.on('error',()=>failEntry(entry,'stt'));decoder.on('error',()=>failEntry(entry,'stt'));opus.pipe(decoder);
+          const streamFailed=()=>{if(current.captures.get(userId)===item)failEntry(entry,'stt');};
+          opus.on('error',streamFailed);decoder.on('error',streamFailed);opus.pipe(decoder);
         }catch{if(entry)failEntry(entry,'stt');}
       };
       connection.receiver.speaking.on('start',capture);
