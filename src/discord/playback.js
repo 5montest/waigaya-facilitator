@@ -1,5 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { createAudioPlayer, createAudioResource, StreamType, AudioPlayerStatus, NoSubscriberBehavior } from '@discordjs/voice';
+import { canSpeak } from '../meeting.js';
 import { upsample } from './audio.js';
 
 export class DiscordPlayback {
@@ -13,12 +14,13 @@ export class DiscordPlayback {
     this.player.on(AudioPlayerStatus.Idle,()=>{if(this.epoch!==null&&this.finished){this.progress();this.bridge.send({type:'playback_done',epoch:this.epoch});this.stop();}});
     this.player.on('error',()=>{this.stop(true);this.onFailure('Discordへの音声再生に失敗しました。');});
     this.onAudio=event=>this.consume(event);
-    this.onState=state=>{if(this.epoch!==null&&state.outputEpoch!==this.epoch)this.stop();};
+    this.onState=state=>{if(this.epoch!==null&&(state.outputEpoch!==this.epoch||!canSpeak(state)))this.stop();};
     bridge.on('audio',this.onAudio);bridge.on('state',this.onState);
   }
   progress(){if(this.epoch!==null&&this.startedAt!==null)this.bridge.send({type:'playback',epoch:this.epoch,heardMs:Date.now()-this.startedAt});}
   consume(event){
     try{
+      if(!canSpeak(this.bridge.state)){this.stop();return;}
       if(event.type==='tts_start'){
         if(event.epoch<this.minimumEpoch||this.bridge.state?.playback?.epoch!==event.epoch||this.bridge.state?.outputEpoch!==event.epoch)return;
         this.stop();this.epoch=event.epoch;this.stream=new PassThrough();this.stream.on('error',()=>{});this.totalBytes=0;

@@ -54,7 +54,7 @@ test('T01 Discordの開始通知なしでは記録を開始しない',()=>{
 test('T12 決定候補と確認済み決定を分離、推定した担当・期限は不明',()=>{
  const {c}=fixture();const document=emptyMinutes();document.decisionCandidates=[{text:'試行する案',evidence:[{utteranceId:'u1',revision:1}]}];document.actionItems=[{text:'設定を試す',owner:'田中',deadline:'来週',evidence:[{utteranceId:'u1',revision:1}]}];
  checkMinutes(document,c.state);assert.equal(document.actionItems[0].owner,null);assert.equal(document.actionItems[0].deadline,null);
- const md=minutesMarkdown(c.state,{version:1,document});assert.match(md,/決定候補（確認待ち）/);assert.match(md,/人が確認済み）\n\n該当なし/);assert.match(md,/担当：不明/);assert.equal(c.state.decisions.length,0);
+ const md=minutesMarkdown(c.state,{version:1,document});assert.match(md,/決定候補（確認待ち）/);assert.match(md,/人が確認済み）\n\n該当なし/);assert.doesNotMatch(md,/担当：不明|期限：不明/);assert.equal(c.state.decisions.length,0);
 });
 test('T17 原発言の訂正で議事録の根拠が要再確認になる',()=>{
  const {c}=fixture();const document=emptyMinutes();document.overview=[{text:'設定作業の検討',evidence:[{utteranceId:'u1',revision:1}]}];const v={version:1,document,approvedAt:1000};

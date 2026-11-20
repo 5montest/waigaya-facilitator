@@ -25,7 +25,7 @@ WAIGAYA_DISCORD_SERVICE_TOKEN_FILE=seacret/discord-service-token.txt
 # この固定設定とGuild IDは .env.local にも同じ値を指定する
 WAIGAYA_DISCORD_VOICE_CHANNEL_ID=<実際の通常VCのID>
 WAIGAYA_DISCORD_MINUTES_FORUM_ID=<実際の議事録フォーラムのID>
-WAIGAYA_DISCORD_RESPONSE_POLICY=on_call
+WAIGAYA_DISCORD_RESPONSE_POLICY=minutes
 WAIGAYA_DISCORD_EMPTY_GRACE_MS=180000
 WAIGAYA_DISCORD_AUTO_PUBLISH=true
 # 任意・Bot側だけ。STT表記揺れの呼称をカンマ区切り
@@ -37,7 +37,7 @@ WAIGAYA_DISCORD_CONTROL_ROLE_IDS=
 
 Bot側は固定IDが必須。会議サーバー側にも指定すれば、Botとの不一致を登録時に拒否する。サーバー側で省略した場合だけ、認証済みBotが実チャンネル検査後にポリシーをSQLiteへ登録する。登録・履歴は再起動後も残る。旧setupやDBの既定保存先より固定設定を優先する。固定設定の変更は導入作業として行い、旧未処理ジョブを新しい公開先へ無断移送しない。
 
-`on_call` は議事録＋声の呼びかけ応答、`minutes` は音声一切なし、`facilitator` は任意の自律進行。毎回のモード選択は不要。`auto_publish=false` は管理用の非公開保存運用で、人の確認が必要な旧ポリシーを保つ。
+通常のstartは議事録のみです。旧 `on_call` 設定も読み込めますが、無指定のstartを音声参加に変更しません。音声参加はstartのmodeで明示選択します。固定運用の選択肢は議事録のみ／音声参加の2つです。`auto_publish=false` は管理用の非公開保存運用を維持します。
 
 ## Discord権限と告知
 
@@ -68,7 +68,7 @@ npm start
 npm run discord
 ```
 
-固定設定のコマンド登録で、古いモード選択・保存先変更などを通常一覧から隠す。登録後も古いsetup / destinationの要求は固定先を変更できない。通常はstart一回→声で質問→全員退出だけ。非常時はend、記録停止はpause、再開はresume、AIだけ停止はquiet。旧stopは記録を止めない。
+固定設定のコマンド登録で、任意のstart modeと途中変更のmodeを登録し、保存先変更などを通常一覧から隠す。登録後も古いsetup / destinationの要求は固定先を変更できない。通常はstart一回→会話→全員退出。音声参加を明示選択した場合だけ声で質問できる。非常時はend、記録停止はpause、再開はresume、AIだけ停止はquiet。旧stopは記録を止めない。
 
 Botを起動してもVCへ入らず録音しない。再起動後、終了途中のジョブはVC接続せずに続行する。録音中だった会議に人が戻っていても停止を維持し、resumeで明示再開する。無人なら同一会議の退出猶予から最終処理を進める。
 

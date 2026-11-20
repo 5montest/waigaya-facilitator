@@ -108,8 +108,8 @@ test('shortMinutesはv2の論点・カテゴリ・担当状態を表示し、@ev
   assert.match(content,/\[事実\] 部品原価は約7000円。/);
   assert.match(content,/担当：<@111111111111111111>/);
   assert.match(content,/担当候補：池谷（通知しません）/);
-  assert.match(content,/担当：担当者特定不可/);
-  assert.match(content,/担当：担当未確定（要確認）/);
+  assert.doesNotMatch(content,/担当：担当者特定不可/);
+  assert.doesNotMatch(content,/担当：担当未確定（要確認）/);
   assert.ok(!content.includes('@everyone'));
   assert.ok(!content.includes(`<@${UNKNOWN_RAW}>`));
   assert.ok(!content.includes('<@&'));
@@ -255,7 +255,7 @@ test('未送信が確認済み（failed_confirmed）の記録は再通知を許�
   assert.equal(r.state.publications.at(-1).status,'published');
   assert.equal(r.state.publications.at(-1).mentions.actions[0].notified,true);
 });
-test('本文長でトークンを落とす場合は通知せず「担当者特定不可」へフォールバックする',()=>{
+test('本文長でトークンを落とす場合は通知せず担当欄を省略する',()=>{
   const longName='あ'.repeat(40),longDeadline='い'.repeat(40),longText='う'.repeat(200);
   const actions=[
     action('きよみずにお願いすることになりました。',{owner:'きよみず',assignment:'explicit',utteranceId:'u5'}),
@@ -277,7 +277,7 @@ test('本文長でトークンを落とす場合は通知せず「担当者特�
   const content=shortMinutes(state,version,{mentions:plan,limit:480});
   assert.ok(Array.from(content).length<=480,`length=${Array.from(content).length}`);
   assert.deepEqual(mentionTokensInContent(content),[CLAY]);
-  assert.match(content,/担当者特定不可（本文の長さ制限）/);
+  assert.doesNotMatch(content,/担当者特定不可|期限：不明/);
   const rendered=renderPublishedContent(state,version,plan);
   assert.deepEqual(rendered.userIds,[CLAY,KTO]);
   assert.ok(Array.from(rendered.content).length<=SHORT_MINUTES_LIMIT);

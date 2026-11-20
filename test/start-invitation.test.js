@@ -1,0 +1,15 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {StartInvitation} from '../src/discord/start-invitation.js';
+function fixture(){let now=0,busy=false;const sent=[],edits=[];const members=new Map([['a',{user:{bot:false}}],['bot',{user:{bot:true}}]]);const channel={members,send:async p=>{sent.push(p);return{edit:async p=>edits.push(p)};}};const invitation=new StartInvitation({channel:async()=>channel,busy:async()=>busy,forumId:'forum',clock:()=>now});return{invitation,sent,edits,members,time:t=>now=t,busy:b=>busy=b};}
+test('人間2人で一度だけ案内。Bot・1人では送らず、送信だけでは開始しない',async()=>{const f=fixture();await f.invitation.tick();assert.equal(f.sent.length,0);f.members.set('b',{user:{bot:false}});await Promise.all([f.invitation.tick(),f.invitation.tick()]);await f.invitation.tick();assert.equal(f.sent.length,1);assert.match(f.sent[0].content,/AI音声なし/);assert.deepEqual(f.sent[0].allowedMentions,{parse:[]});});
+test('参加者だけが一度消費でき、同時クリック・旧ボタン・人数減少を拒否',async()=>{const f=fixture();f.members.set('b',{user:{bot:false}});await f.invitation.tick();const token=f.invitation.pending.token;assert.equal(await f.invitation.take(token,'other'),false);const results=await Promise.all([f.invitation.take(token,'a'),f.invitation.take(token,'b')]);assert.equal(results.filter(Boolean).length,1);assert.equal(await f.invitation.take(token,'a'),false);});
+test('10分で失効し再通知しない。2人未満が5分続いた次の集まりで再通知',async()=>{const f=fixture();f.members.set('b',{user:{bot:false}});await f.invitation.tick();const token=f.invitation.pending.token;f.time(600000);await f.invitation.tick();assert.equal(await f.invitation.take(token,'a'),false);assert.equal(f.sent.length,1);f.members.delete('b');await f.invitation.tick();f.time(900001);await f.invitation.tick();f.members.set('b',{user:{bot:false}});await f.invitation.tick();assert.equal(f.sent.length,2);});
+test('既存会議・停止中は開始案内を出さず、開始済みなら既存ボタンを無効化',async()=>{const f=fixture();f.members.set('b',{user:{bot:false}});await f.invitation.tick();f.busy(true);await f.invitation.tick();assert.equal(f.invitation.pending,null);assert.equal(f.sent.length,1);f.invitation.close();assert.equal(await f.invitation.take('old','a'),false);});
+test('模擬Discordの開始ボタンから実HTTP・SQLiteに議事録のみ会議を作成する',async()=>{
+ const {fixedFixture,ids}=await import('./helpers/fixed.js');const {Events}=await import('discord.js');const r=await fixedFixture({startMode:null});
+ try{await r.membership(true,{user:r.other});await r.runtime.invitation.tick();assert.equal(r.joins(),0);const token=r.runtime.invitation.pending.token;const replies=[];
+ const interaction={guildId:ids.guild,guild:r.guild,member:r.member,user:{id:ids.owner},customId:`wg:invite:${token}`,isButton:()=>true,isChatInputCommand:()=>false,deferred:false,async deferReply(){this.deferred=true;},async editReply(p){replies.push(p);},async reply(p){replies.push(p);}};
+ await Promise.all(r.client.listeners(Events.InteractionCreate).map(h=>h(interaction)));assert.equal(r.joins(),1);assert.equal((await r.state()).mode,'minutes');assert.equal(r.tts.length,0);assert.equal(r.runtime.invitation.pending,null);
+ }finally{await r.close();}
+});

@@ -8,8 +8,8 @@ import { applyPublication,publicationMarkdown,automaticPublicationAllowed } from
 import { emptyMinutes } from '../src/minutes.js';
 import { fixedFixture,ids,waitFor } from './helpers/fixed.js';
 const env={DISCORD_GUILD_ID:ids.guild,WAIGAYA_DISCORD_VOICE_CHANNEL_ID:ids.vc,WAIGAYA_DISCORD_MINUTES_FORUM_ID:ids.forum};
-test('固定設定はID・応答方針・真偽値・猶予を検証し、既定はon_call・3分・自動公開',()=>{
- const p=fixedPolicy(env);assert.equal(p.responsePolicy,'on_call');assert.equal(p.emptyGraceMs,180000);assert.equal(p.autoPublish,true);assert.equal(fixedPolicy({}),null);assert.throws(()=>fixedPolicy({}, {required:true}));
+test('固定設定はID・応答方針・真偽値・猶予を検証し、既定はminutes・3分・自動公開',()=>{
+ const p=fixedPolicy(env);assert.equal(p.responsePolicy,'minutes');assert.equal(p.emptyGraceMs,180000);assert.equal(p.autoPublish,true);assert.equal(fixedPolicy({}),null);assert.throws(()=>fixedPolicy({}, {required:true}));
  for(const overrides of [{WAIGAYA_DISCORD_MINUTES_FORUM_ID:'名前'},{WAIGAYA_DISCORD_RESPONSE_POLICY:'auto'},{WAIGAYA_DISCORD_AUTO_PUBLISH:'yes'},{WAIGAYA_DISCORD_EMPTY_GRACE_MS:'-1'}])assert.throws(()=>fixedPolicy({...env,...overrides}));
 });
 test('呼称は冒頭の直接依頼だけ検出し、話題・引用・部分一致・曖昧な文を起動にしない',()=>{
@@ -18,7 +18,7 @@ test('呼称は冒頭の直接依頼だけ検出し、話題・引用・部分�
  assert.equal(detectAddress('ワイガヤ').clarification,true);assert.equal(detectAddress('我が谷、まとめて').addressed,true);
 });
 test('固定コマンドは開始にモード・保存先を要求せず、汎用設定を隠しendと旧stopを区別する',()=>{
- const c=commandFor({fixed:true});assert.deepEqual(c.options.find(s=>s.name==='start').options.map(o=>o.name),['topic','purpose']);assert.ok(c.options.find(s=>s.name==='start').options.every(o=>!o.required));for(const name of ['setup','destination','mode','auto','publish','ask'])assert.ok(!c.options.some(s=>s.name===name));assert.match(c.options.find(s=>s.name==='end').description,/終了/);assert.match(c.options.find(s=>s.name==='stop').description,/記録は継続/);
+ const c=commandFor({fixed:true});assert.deepEqual(c.options.find(s=>s.name==='start').options.map(o=>o.name),['topic','mode','purpose']);assert.ok(c.options.find(s=>s.name==='start').options.every(o=>!o.required));for(const name of ['setup','destination','auto','publish','ask'])assert.ok(!c.options.some(s=>s.name===name));assert.match(c.options.find(s=>s.name==='end').description,/終了/);assert.match(c.options.find(s=>s.name==='stop').description,/記録は継続/);
 });
 test('音声依頼の生成は人の声だけでは取消さず、新しい意味ある確定発言・修正で取り消す',()=>{
  let now=1000;const c=new Controller({mode:'assistant',status:'recording',guildId:ids.guild,inputHealthy:true},()=>now);c.upsert({id:'call',source:'discord',userId:ids.owner,text:'ワイガヤ、二つの案の違いは？'});const ticket=c.beginRequest({mode:'voice_request',voiceRequest:{utteranceId:'call',revision:1,userId:ids.owner,question:'二つの案の違いは？'}});c.voice(true);assert.equal(c.state.request.status,'thinking');c.voice(false);now+=1000;

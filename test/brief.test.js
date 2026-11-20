@@ -89,7 +89,8 @@ test('脱線通知は明示ON後だけ検討し、holdを正常に扱い、OFF�
  try{
   await r.action('start');await r.emit('ワイガヤ、今日の目的は配線方式を比較して選ぶこと。費用と作業時間と取り付けの難しさを確認したい。旅行の計画は今回扱わない。');await waitFor(()=>!r.runtime.meeting.voiceAsking);
   await r.emit('ワイガヤ、脱線したら声をかけて');await waitFor(()=>!r.runtime.meeting.voiceAsking);
-  const f=r.runtime.meeting.facilitator;f.clock=()=>Date.now()+60000;await waitFor(()=>!r.runtime.meeting.bridge.state.playback&&!r.runtime.meeting.bridge.state.reply);assert.equal(await f.tick(),false);assert.equal(considered.length,0);
+  const f=r.runtime.meeting.facilitator;clearInterval(f.timer); // Explicit ticks below must not race the 250ms background timer.
+  f.clock=()=>Date.now()+60000;await waitFor(()=>!r.runtime.meeting.bridge.state.playback&&!r.runtime.meeting.bridge.state.reply);assert.equal(await f.tick(),false);assert.equal(considered.length,0);
   for(let i=0;i<3;i++)await r.emit('旅行の行き先やホテルの予約について相談しています。');
   assert.equal(await f.tick(),false);assert.equal(considered.length,1);assert.equal(considered[0].autonomous,true);assert.equal(r.tts.length,2);
   await r.emit('ワイガヤ、脱線の声かけを止めて');await waitFor(()=>!r.runtime.meeting.voiceAsking);assert.equal((await r.state()).focusGuard,false);

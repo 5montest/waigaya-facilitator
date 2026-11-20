@@ -47,7 +47,7 @@ test('Discord設定はトークンをファイルから読み、外部サーバ�
 test('音声認識の設定完了前に届いたPCMと発話終了を保持し、確定結果に話者と時刻を付ける',async()=>{
   let handlers;const calls=[],utterances=[];
   const capture=transcribeSpeaker({speaker:'参加者 (123)',startedAt:1000,emit:u=>utterances.push(u),onError:assert.fail,onUsage:()=>{},connect:h=>{handlers=h;return{voice:v=>calls.push(['voice',v]),send:b=>calls.push(['send',b.length]),end:()=>calls.push(['end']),abort:()=>calls.push(['abort'])};}});
-  assert.match(handlers.prompt,/ワイガヤ/);capture.write(samples([100,100,100,100]));capture.end();assert.deepEqual(calls,[]);handlers.onReady();assert.deepEqual(calls,[['voice',true],['send',2],['voice',false],['end']]);
+  assert.match(handlers.prompt,/ワイガヤ/);assert.doesNotMatch(handlers.prompt,/まとめて|呼びかけ例/);capture.write(samples([100,100,100,100]));capture.end();assert.deepEqual(calls,[]);handlers.onReady();assert.deepEqual(calls,[['voice',true],['send',2],['send',4798],['voice',false],['end']]);
   handlers.emit({id:'u',text:'条件を確認します。',startMs:0,endMs:40,final:true});assert.equal(utterances[0].speaker,'参加者 (123)');assert.equal(utterances[0].startMs,1000);assert.equal(utterances[0].source,'discord');
   handlers.onClose();await capture.closed;
 });
@@ -122,4 +122,33 @@ test('VADは60msで検知し、短い相槌は中断せず、短い間を含む6
   loud(3);assert.deepEqual(changes,[true]);loud(7);quiet(15);assert.equal(interrupts,0);assert.deepEqual(changes,[true,false]);
   loud(15);quiet(5);loud(14);assert.equal(interrupts,0);loud(1);assert.equal(interrupts,1);loud(40);assert.equal(interrupts,1);
   activity.end();loud(30);assert.equal(interrupts,2);activity.end();
+});
+
+test('同じSTT接続を再利用しても無音の間隔を除去せず原発言の実時刻を保持する',async()=>{
+ let h,connections=0;const output=[],calls=[];
+ const c=transcribeSpeaker({speaker:'A',startedAt:1000,emit:u=>output.push(u),onError:assert.fail,connect:args=>{h=args;connections++;return{voice:v=>calls.push(v),send(){},end(){h.onClose();},abort(){h.onClose();}};}});
+ c.write(Buffer.alloc(19200));c.endTurn();c.beginTurn(10000);c.write(Buffer.alloc(38400));c.endTurn();h.onReady();
+ h.emit({id:'second',text:'二番目',final:true,startMs:100,endMs:300});h.emit({id:'first',text:'一番目',final:true,startMs:0,endMs:100});
+ assert.equal(connections,1);assert.equal(output[0].startMs,10000);assert.equal(output[0].endMs,10200);assert.equal(output[1].startMs,1000);assert.equal(output[1].endMs,1100);assert.deepEqual(calls,[true,false,true,false]);c.end();await c.closed;
+});
+
+test('1時間相当の1000発言でも同じ接続上の発言境界と実時刻を保持する',()=>{
+ let h,connections=0;const output=[];
+ const c=transcribeSpeaker({speaker:'A',startedAt:1000,emit:u=>output.push(u),onError:assert.fail,connect:args=>{h=args;connections++;return{voice(){},send(){},end(){h.onClose();},abort(){h.onClose();}};}});h.onReady();
+ for(let i=0;i<1000;i++){
+  if(i)c.beginTurn(1000+i*3600);c.write(Buffer.alloc(19200));c.endTurn();
+  h.emit({id:String(i),text:'記録',final:true,startMs:i*100,endMs:(i+1)*100});
+ }
+ assert.equal(connections,1);assert.equal(output.length,1000);assert.equal(output.at(-1).startMs,1000+999*3600);assert.equal(output.at(-1).endMs,1100+999*3600);c.end();
+});
+
+test('発言区切りのcommit送信が失敗しても非同期endイベントから例外を漏らさない',async()=>{
+ let h,aborts=0;const errors=[];const c=transcribeSpeaker({speaker:'A',emit(){},onError:e=>errors.push(e),connect:args=>{h=args;return{voice:v=>{if(!v)throw new Error('closed socket');},send(){},end(){},abort(){aborts++;h.onClose();}};}});
+ h.onReady();c.write(Buffer.alloc(19200));assert.doesNotThrow(()=>c.endTurn());await c.closed;assert.equal(errors.length,1);assert.equal(aborts,1);
+});
+
+test('12秒自動commitの後に残った短い末尾も確定し、次の発言と混ぜない',()=>{
+ let h;const sent=[],output=[];const c=transcribeSpeaker({speaker:'A',startedAt:1000,emit:u=>output.push(u),onError:assert.fail,connect:args=>{h=args;return{voice(){},send:b=>sent.push(b.length),end(){h.onClose();},abort(){h.onClose();}};}});h.onReady();
+ c.write(Buffer.alloc(192000*12+192000*.05));c.endTurn();assert.deepEqual(sent,[576000,2400,2400]);
+ c.beginTurn(20000);c.write(Buffer.alloc(19200));c.endTurn();h.emit({id:'next',text:'次の発言',final:true,startMs:12100,endMs:12200});assert.equal(output[0].startMs,20000);c.end();
 });
