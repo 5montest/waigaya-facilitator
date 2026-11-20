@@ -1,3 +1,4 @@
+import { StartInvitation } from './start-invitation.js';
 import { UserError as Error, UserError } from '../errors.js';
 import { Client, GatewayIntentBits, Events, MessageFlags, ChannelType, PermissionFlagsBits, AttachmentBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder,ChannelSelectMenuBuilder } from 'discord.js';
 import { joinVoiceChannel, entersState, VoiceConnectionStatus, EndBehaviorType } from '@discordjs/voice';
@@ -40,6 +41,7 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
     catch{return null;}
   }
   const service=bridgeFactory(config.server,{serviceToken:config.serviceToken});
+  let invitation=null;
   let meeting=null,startingBridge=null,starting=false,disposed=false,completionWorker=null,policyReady=false,beginning=false;
   const ownsSession=id=>meeting?.bridge.state.id===id||startingBridge?.state?.id===id;
   const safe = content => ({content,allowedMentions:{parse:[]}});
@@ -351,6 +353,12 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
         modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('text').setLabel('本文（根拠は維持します）').setStyle(TextInputStyle.Paragraph).setMaxLength(Number(state.minutesHistory.at(-1).document?.schemaVersion)===2?400:2000).setRequired(true).setValue(target.text)));
         await interaction.showModal(modal);return;
       }
+      if(interaction.isButton?.()&&interaction.customId.startsWith('wg:invite:')){
+        await interaction.deferReply({flags:MessageFlags.Ephemeral});
+        if(!invitation||!await invitation.take(interaction.customId.slice('wg:invite:'.length),interaction.user.id))throw new UserError('このボタンは使用済み・期限切れか、会議室に人が2人以上いません。会議室で /waigaya start を使ってください。');
+        const channel=await interaction.guild.channels.fetch(config.fixed.voiceChannelId);
+        await begin(interaction,channel,undefined,'minutes',config.fixed.minutesForumId);return;
+      }
       if(interaction.isButton?.()){
         const [,operation,id,versionString]=interaction.customId.split(':');
         if(operation==='confirm'){
@@ -520,13 +528,15 @@ export async function runBot({ config = discordConfig(), client = new Client({ i
           await service.api(`/api/sessions/${saved.id}/events`,{type:'health',kind:'connection',healthy:false,gap:{startedAt:null,endedAt:Date.now()}});
         }
       }
-      if(config.fixed)await completionWorker.tick();
+      if(config.fixed){await completionWorker.tick();
+        invitation=new StartInvitation({forumId:config.fixed.minutesForumId,autoPublish:config.fixed.autoPublish,channel:async()=>{const guild=await client.guilds.fetch(config.guildId);return guild.channels.fetch(config.fixed.voiceChannelId);},busy:async()=>Boolean(meeting||starting||beginning)||(await list()).some(s=>['created','recording','paused','empty_grace','finalizing'].includes(s.status))});invitation.start();
+      }
     }catch{policyReady=false;console.error('固定設定・前回会議の復旧を確認できません。記録は開始しません。管理者が設定を確認してください。');}
     console.log('Discord Botを起動しました。起動だけでは記録しません。固定VCで /start を使ってください。');
   });
-  const quit=()=>void (async()=>{completionWorker?.close();if(meeting){const current=meeting;current.closing=true;current.addressing?.close();current.grace.close();current.facilitator.close();current.playback.close();await drain(current);await current.bridge.api(current.bridge.path+'/events',{type:'lifecycle',action:'pause'});current.closed=true;await current.bridge.close();current.connection.destroy();}client.destroy();})().finally(()=>process.exit(0));
+  const quit=()=>void (async()=>{completionWorker?.close();invitation?.close();if(meeting){const current=meeting;current.closing=true;current.addressing?.close();current.grace.close();current.facilitator.close();current.playback.close();await drain(current);await current.bridge.api(current.bridge.path+'/events',{type:'lifecycle',action:'pause'});current.closed=true;await current.bridge.close();current.connection.destroy();}client.destroy();})().finally(()=>process.exit(0));
   process.once('SIGINT',quit);process.once('SIGTERM',quit);
   try{await client.login(config.token);}catch{client.destroy();throw new Error('Discordへログインできません。トークンと接続を確認してください。');}
-  return {client,get meeting(){return meeting;},get completionWorker(){return completionWorker;},close:async()=>{disposed=true;completionWorker?.close();process.off('SIGINT',quit);process.off('SIGTERM',quit);if(meeting)await finish(meeting);client.destroy();}};
+  return {client,get invitation(){return invitation;},get meeting(){return meeting;},get completionWorker(){return completionWorker;},close:async()=>{disposed=true;invitation?.close();completionWorker?.close();process.off('SIGINT',quit);process.off('SIGTERM',quit);if(meeting)await finish(meeting);client.destroy();}};
 }
 if(process.argv[1]?.endsWith('/discord/bot.js'))runBot().catch(()=>{console.error('Discord Botを起動できません。discord-setup.mdに従って設定してください。');process.exitCode=1;});
